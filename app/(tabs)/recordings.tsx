@@ -1,10 +1,10 @@
 import React from 'react';
-import { View, Text, FlatList, StyleSheet, Alert, TextInput } from 'react-native';
+import { View, Text, FlatList, StyleSheet, Alert, Pressable, Linking } from 'react-native';
 import { useApp } from '@/contexts/AppContext';
 import { RecordingListItem } from '@/components/RecordingListItem';
 
 export default function RecordingsScreen() {
-  const { theme, recordings, updateRecording } = useApp();
+  const { theme, recordings, updateRecording, settings } = useApp();
 
   const handleEditName = (id: string, currentName: string) => {
     Alert.prompt(
@@ -26,10 +26,22 @@ export default function RecordingsScreen() {
     );
   };
 
+  const serverLinkButton = settings.serverUrl ? (
+    <Pressable
+      style={[styles.serverLink, { borderColor: theme.border }]}
+      onPress={() => Linking.openURL(settings.serverUrl)}
+    >
+      <Text style={[styles.serverLinkText, { color: theme.accent }]}>
+        管理サーバーへ →
+      </Text>
+    </Pressable>
+  ) : null;
+
   if (recordings.length === 0) {
     return (
       <View style={[styles.empty, { backgroundColor: theme.bg }]}>
         <Text style={[styles.emptyText, { color: theme.textSecondary }]}>録音がありません</Text>
+        {serverLinkButton}
       </View>
     );
   }
@@ -43,6 +55,7 @@ export default function RecordingsScreen() {
           <RecordingListItem recording={item} onEditName={handleEditName} />
         )}
         contentContainerStyle={{ paddingVertical: 8 }}
+        ListFooterComponent={serverLinkButton}
       />
     </View>
   );
@@ -59,5 +72,17 @@ const styles = StyleSheet.create({
   },
   emptyText: {
     fontSize: 16,
+  },
+  serverLink: {
+    marginHorizontal: 16,
+    marginTop: 12,
+    marginBottom: 24,
+    paddingVertical: 14,
+    alignItems: 'center',
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  serverLinkText: {
+    fontSize: 15,
+    fontWeight: '600',
   },
 });

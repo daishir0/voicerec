@@ -30,6 +30,7 @@ function formatDate(isoString: string): string {
 
 export function RecordingListItem({ recording, onEditName }: RecordingListItemProps) {
   const { theme, deleteRecording } = useApp();
+  const isUploaded = recording.uploadStatus === 'uploaded';
 
   const handleDelete = () => {
     Alert.alert('削除確認', `「${recording.displayName}」を削除しますか？`, [
@@ -43,17 +44,27 @@ export function RecordingListItem({ recording, onEditName }: RecordingListItemPr
   };
 
   return (
-    <View style={[styles.container, { backgroundColor: theme.bgSecondary, borderColor: theme.border }]}>
+    <View style={[
+      styles.container,
+      { backgroundColor: isUploaded ? theme.bgTertiary : theme.bgSecondary, borderColor: theme.border },
+      isUploaded && { opacity: 0.6 },
+    ]}>
       <View style={styles.header}>
-        <Pressable style={styles.nameRow} onPress={() => onEditName(recording.id, recording.displayName)}>
+        <View style={[styles.nameRow, { opacity: isUploaded ? 0.8 : 1 }]}>
           <Text style={[styles.name, { color: theme.text }]} numberOfLines={1}>
             {recording.displayName}
           </Text>
-          <Ionicons name="pencil" size={14} color={theme.textSecondary} style={{ marginLeft: 4 }} />
-        </Pressable>
-        <Pressable onPress={handleDelete} hitSlop={8}>
-          <Ionicons name="trash-outline" size={20} color={theme.red} />
-        </Pressable>
+          {!isUploaded && (
+            <Pressable onPress={() => onEditName(recording.id, recording.displayName)}>
+              <Ionicons name="pencil" size={14} color={theme.textSecondary} style={{ marginLeft: 4 }} />
+            </Pressable>
+          )}
+        </View>
+        {!isUploaded && (
+          <Pressable onPress={handleDelete} hitSlop={8}>
+            <Ionicons name="trash-outline" size={20} color={theme.red} />
+          </Pressable>
+        )}
       </View>
       <View style={styles.meta}>
         <Text style={[styles.metaText, { color: theme.textSecondary }]}>

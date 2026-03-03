@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { useColorScheme } from 'react-native';
+import * as FileSystem from 'expo-file-system';
 import { ServerSettings, RecordingEntry } from '@/types/recording';
 import { loadSettings, saveSettings, loadRecordings, saveRecordings } from '@/services/storage-service';
 import { uploadRecording } from '@/services/upload-service';
@@ -71,12 +72,44 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     })();
   }, []);
 
-  // Auto-upload on mount
+  // Cleanup old uploaded recordings (24h+) and auto-upload on mount
   useEffect(() => {
     if (loaded) {
-      doUploadPending();
+      cleanupOldRecordings().then(() => doUploadPending());
     }
   }, [loaded]);
+
+  const cleanupOldRecordings = useCallback(async () => {
+    const now = Date.now();
+    const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
+    const current = recordingsRef.current;
+
+    const toDelete = current.filter(
+      r => r.uploadStatus === 'uploaded' && now - new Date(r.createdAt).getTime() > TWENTY_FOUR_HOURS
+    );
+
+    if (toDelete.length === 0) return;
+
+    // 物理ファイル削除
+    for (const rec of toDelete) {
+      try {
+        const info = await FileSystem.getInfoAsync(rec.uri);
+        if (info.exists) {
+          await FileSystem.deleteAsync(rec.uri, { idempotent: true });
+        }
+      } catch (e) {
+        console.warn(`cleanup: ファイル削除失敗 ${rec.uri}`, e);
+      }
+    }
+
+    // リストから除外して保存
+    const deleteIds = new Set(toDelete.map(r => r.id));
+    const next = current.filter(r => !deleteIds.has(r.id));
+    recordingsRef.current = next;
+    setRecordings(next);
+    await saveRecordings(next);
+    console.log(`cleanup: ${toDelete.length}件の古い録音を削除しました`);
+  }, []);
 
   const theme: Theme = {
     bg: isDarkMode ? '#000' : '#fff',
