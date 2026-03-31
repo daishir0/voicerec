@@ -1,10 +1,11 @@
-import React from 'react';
-import { View, Text, FlatList, StyleSheet, Alert, Pressable, Linking } from 'react-native';
+import React, { useState } from 'react';
+import { View, Text, FlatList, StyleSheet, Alert, Pressable, Linking, ActivityIndicator } from 'react-native';
 import { useApp } from '@/contexts/AppContext';
 import { RecordingListItem } from '@/components/RecordingListItem';
 
 export default function RecordingsScreen() {
   const { theme, recordings, updateRecording, settings } = useApp();
+  const [openingServer, setOpeningServer] = useState(false);
 
   const handleEditName = (id: string, currentName: string) => {
     Alert.prompt(
@@ -26,14 +27,44 @@ export default function RecordingsScreen() {
     );
   };
 
+  const handleOpenServer = async () => {
+    if (!settings.serverUrl || openingServer) return;
+    setOpeningServer(true);
+    try {
+      const auth = btoa(`${settings.username}:${settings.password}`);
+      const res = await fetch(`${settings.serverUrl}/api/auth/ott`, {
+        method: 'POST',
+        headers: { Authorization: `Basic ${auth}` },
+      });
+      if (res.ok) {
+        const { token } = await res.json();
+        await Linking.openURL(`${settings.serverUrl}/user/api/auto-login?token=${token}`);
+        setOpeningServer(false);
+        return;
+      }
+    } catch {}
+    await Linking.openURL(settings.serverUrl);
+    setOpeningServer(false);
+  };
+
   const serverLinkButton = settings.serverUrl ? (
     <Pressable
       style={[styles.serverLink, { borderColor: theme.border }]}
-      onPress={() => Linking.openURL(settings.serverUrl)}
+      onPress={handleOpenServer}
+      disabled={openingServer}
     >
-      <Text style={[styles.serverLinkText, { color: theme.accent }]}>
-        管理サーバーへ →
-      </Text>
+      {openingServer ? (
+        <View style={styles.serverLinkLoading}>
+          <ActivityIndicator size="small" color={theme.accent} />
+          <Text style={[styles.serverLinkText, { color: theme.textSecondary }]}>
+            接続中...
+          </Text>
+        </View>
+      ) : (
+        <Text style={[styles.serverLinkText, { color: theme.accent }]}>
+          管理サーバーへ →
+        </Text>
+      )}
     </Pressable>
   ) : null;
 
@@ -84,5 +115,10 @@ const styles = StyleSheet.create({
   serverLinkText: {
     fontSize: 15,
     fontWeight: '600',
+  },
+  serverLinkLoading: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
   },
 });
