@@ -29,8 +29,9 @@ function formatDate(isoString: string): string {
 }
 
 export function RecordingListItem({ recording, onEditName }: RecordingListItemProps) {
-  const { theme, deleteRecording } = useApp();
+  const { theme, deleteRecording, retryUpload } = useApp();
   const isUploaded = recording.uploadStatus === 'uploaded';
+  const isFailed = recording.uploadStatus === 'failed';
 
   const handleDelete = () => {
     Alert.alert('削除確認', `「${recording.displayName}」を削除しますか？`, [
@@ -41,6 +42,10 @@ export function RecordingListItem({ recording, onEditName }: RecordingListItemPr
         onPress: () => deleteRecording(recording.id),
       },
     ]);
+  };
+
+  const handleRetry = () => {
+    retryUpload(recording.id);
   };
 
   return (
@@ -74,7 +79,15 @@ export function RecordingListItem({ recording, onEditName }: RecordingListItemPr
           {formatDate(recording.createdAt)}
         </Text>
       </View>
-      <UploadStatusBadge status={recording.uploadStatus} />
+      <View style={styles.statusRow}>
+        <UploadStatusBadge status={recording.uploadStatus} />
+        {isFailed && (
+          <Pressable onPress={handleRetry} style={styles.retryButton} hitSlop={8}>
+            <Ionicons name="refresh" size={14} color="#fff" />
+            <Text style={styles.retryText}>再送信</Text>
+          </Pressable>
+        )}
+      </View>
     </View>
   );
 }
@@ -111,5 +124,24 @@ const styles = StyleSheet.create({
   },
   metaText: {
     fontSize: 12,
+  },
+  statusRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 8,
+  },
+  retryButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: 4,
+    backgroundColor: '#007AFF',
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+    borderRadius: 10,
+  },
+  retryText: {
+    color: '#fff',
+    fontSize: 11,
+    fontWeight: '600',
   },
 });

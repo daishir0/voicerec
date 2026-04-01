@@ -23,9 +23,8 @@ export async function uploadRecording(
   const { serverUrl, username, password } = settings;
   const auth = btoa(`${username}:${password}`);
 
+  // Try FileSystem.uploadAsync first (foreground session for reliability)
   try {
-    // FileSystem.uploadAsync uses NSURLSession on iOS,
-    // which continues uploading even when the app is backgrounded.
     const result = await FileSystem.uploadAsync(
       `${serverUrl}/api/recordings/upload`,
       recording.uri,
@@ -41,7 +40,7 @@ export async function uploadRecording(
         headers: {
           Authorization: `Basic ${auth}`,
         },
-        sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
+        sessionType: FileSystem.FileSystemSessionType.FOREGROUND,
       }
     );
 
@@ -53,10 +52,37 @@ export async function uploadRecording(
         return { ok: true };
       }
     }
-    console.warn(`Upload failed: status=${result.status} body=${result.body}`);
-    return { ok: false };
+    console.warn(`Upload failed (uploadAsync): status=${result.status} body=${result.body}`);
   } catch (err) {
-    console.warn('Upload error:', err);
-    return { ok: false };
+    console.warn('uploadAsync error, falling back to fetch:', err);
   }
+
+  // Fallback: use fetch with FormData
+  try {
+    const formData = new FormData();
+    formData.append('file', {
+      uri: recording.uri,
+      name: recording.filename,
+      type: recording.mimeType,
+    } as any);
+    formData.append('originalName', recording.filename);
+    formData.append('displayName', recording.displayName);
+    formData.append('duration', String(recording.duration));
+
+    const response = await fetch(`${serverUrl}/api/recordings/upload`, {
+      method: 'POST',
+      headers: { Authorization: `Basic ${auth}` },
+      body: formData,
+    });
+
+    if (response.ok) {
+      const data = await response.json();
+      return { ok: true, serverId: data.id };
+    }
+    console.warn(`Upload failed (fetch): status=${response.status}`);
+  } catch (err) {
+    console.warn('Upload fetch error:', err);
+  }
+
+  return { ok: false };
 }

@@ -29,6 +29,7 @@ interface AppContextType {
   updateRecording: (id: string, updates: Partial<RecordingEntry>) => Promise<void>;
   deleteRecording: (id: string) => Promise<void>;
   uploadPending: () => void;
+  retryUpload: (id: string) => void;
   toggleDarkMode: () => void;
 }
 
@@ -219,6 +220,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setTimeout(() => doUploadPending(), 500);
   }, [doUploadPending]);
 
+  // 個別の録音を手動リトライ
+  const retryUpload = useCallback((id: string) => {
+    const rec = recordingsRef.current.find(r => r.id === id);
+    if (!rec || rec.uploadStatus === 'uploading' || rec.uploadStatus === 'uploaded') return;
+
+    // waitingに戻してからアップロード実行
+    const next = recordingsRef.current.map(r =>
+      r.id === id ? { ...r, uploadStatus: 'waiting' as const } : r
+    );
+    recordingsRef.current = next;
+    setRecordings([...next]);
+    saveRecordings(next);
+
+    setTimeout(() => doUploadPending(), 100);
+  }, [doUploadPending]);
+
   const toggleDarkMode = useCallback(() => {
     setIsDarkMode(prev => {
       const next = !prev;
@@ -239,6 +256,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         updateRecording,
         deleteRecording,
         uploadPending,
+        retryUpload,
         toggleDarkMode,
       }}
     >
