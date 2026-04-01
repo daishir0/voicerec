@@ -38,11 +38,26 @@ export default function SettingsScreen() {
     router.back();
   };
 
+  const handleClose = () => {
+    router.back();
+  };
+
   return (
     <KeyboardAvoidingView
-      style={{ flex: 1 }}
+      style={{ flex: 1, backgroundColor: theme.bg }}
       behavior={Platform.OS === 'ios' ? 'padding' : undefined}
     >
+      {/* Header */}
+      <View style={[styles.header, { borderBottomColor: theme.border }]}>
+        <Pressable onPress={handleClose} hitSlop={12} style={styles.headerButton}>
+          <Ionicons name="close" size={24} color={theme.text} />
+        </Pressable>
+        <Text style={[styles.headerTitle, { color: theme.text }]}>設定</Text>
+        <Pressable onPress={handleSave} hitSlop={12} style={styles.headerButton}>
+          <Text style={[styles.headerSave, { color: theme.accent }]}>保存</Text>
+        </Pressable>
+      </View>
+
       <ScrollView
         style={[styles.container, { backgroundColor: theme.bg }]}
         contentContainerStyle={styles.content}
@@ -103,19 +118,33 @@ export default function SettingsScreen() {
             </View>
           )}
         </Pressable>
-
-        <Pressable
-          style={[styles.button, { backgroundColor: theme.accent, marginTop: 24 }]}
-          onPress={handleSave}
-        >
-          <Text style={[styles.buttonText, { color: '#fff', fontWeight: '600' }]}>保存</Text>
-        </Pressable>
       </ScrollView>
     </KeyboardAvoidingView>
   );
 }
 
 const styles = StyleSheet.create({
+  header: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingTop: 16,
+    paddingBottom: 12,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  headerButton: {
+    minWidth: 44,
+  },
+  headerTitle: {
+    fontSize: 17,
+    fontWeight: '600',
+  },
+  headerSave: {
+    fontSize: 17,
+    fontWeight: '600',
+    textAlign: 'right',
+  },
   container: {
     flex: 1,
   },
