@@ -1,5 +1,5 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
-import { useColorScheme } from 'react-native';
+import { useColorScheme, AppState } from 'react-native';
 import * as FileSystem from 'expo-file-system';
 import { ServerSettings, RecordingEntry } from '@/types/recording';
 import { loadSettings, saveSettings, loadRecordings, saveRecordings } from '@/services/storage-service';
@@ -78,6 +78,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       cleanupOldRecordings().then(() => doUploadPending());
     }
   }, [loaded]);
+
+  // Retry failed uploads when app returns to foreground
+  const doUploadRef = useRef<() => Promise<void>>(undefined);
 
   const cleanupOldRecordings = useCallback(async () => {
     const now = Date.now();
@@ -196,6 +199,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       uploadingRef.current = false;
     }
   }, []);
+
+  // doUploadRefに最新の関数を保持
+  doUploadRef.current = doUploadPending;
+
+  // フォアグラウンド復帰時にリトライ
+  useEffect(() => {
+    const sub = AppState.addEventListener('change', (nextState) => {
+      if (nextState === 'active' && loaded) {
+        doUploadRef.current?.();
+      }
+    });
+    return () => sub.remove();
+  }, [loaded]);
 
   // uploadPending は常に最新のref値を使うので依存配列空でOK
   const uploadPending = useCallback(() => {

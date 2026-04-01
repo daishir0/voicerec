@@ -1,3 +1,4 @@
+import * as FileSystem from 'expo-file-system/legacy';
 import { ServerSettings, RecordingEntry } from '@/types/recording';
 
 export async function testConnection(settings: ServerSettings): Promise<boolean> {
@@ -22,29 +23,40 @@ export async function uploadRecording(
   const { serverUrl, username, password } = settings;
   const auth = btoa(`${username}:${password}`);
 
-  const formData = new FormData();
-  formData.append('file', {
-    uri: recording.uri,
-    name: recording.filename,
-    type: recording.mimeType,
-  } as any);
-  formData.append('originalName', recording.filename);
-  formData.append('displayName', recording.displayName);
-  formData.append('duration', String(recording.duration));
-
   try {
-    const response = await fetch(`${serverUrl}/api/recordings/upload`, {
-      method: 'POST',
-      headers: { Authorization: `Basic ${auth}` },
-      body: formData,
-    });
+    // FileSystem.uploadAsync uses NSURLSession on iOS,
+    // which continues uploading even when the app is backgrounded.
+    const result = await FileSystem.uploadAsync(
+      `${serverUrl}/api/recordings/upload`,
+      recording.uri,
+      {
+        httpMethod: 'POST',
+        uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+        fieldName: 'file',
+        parameters: {
+          originalName: recording.filename,
+          displayName: recording.displayName,
+          duration: String(recording.duration),
+        },
+        headers: {
+          Authorization: `Basic ${auth}`,
+        },
+        sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
+      }
+    );
 
-    if (response.ok) {
-      const data = await response.json();
-      return { ok: true, serverId: data.id };
+    if (result.status >= 200 && result.status < 300) {
+      try {
+        const data = JSON.parse(result.body);
+        return { ok: true, serverId: data.id };
+      } catch {
+        return { ok: true };
+      }
     }
+    console.warn(`Upload failed: status=${result.status} body=${result.body}`);
     return { ok: false };
-  } catch {
+  } catch (err) {
+    console.warn('Upload error:', err);
     return { ok: false };
   }
 }
