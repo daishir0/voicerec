@@ -4,6 +4,7 @@ import * as FileSystem from 'expo-file-system';
 import { ServerSettings, RecordingEntry } from '@/types/recording';
 import { loadSettings, saveSettings, loadRecordings, saveRecordings } from '@/services/storage-service';
 import { uploadRecording } from '@/services/upload-service';
+import { log } from '@/services/logger';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const DARK_MODE_KEY = 'rec18082_darkMode';
@@ -160,14 +161,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     try {
       const s = settingsRef.current;
       if (!s.serverUrl || !s.username || !s.password) {
-        console.log('uploadPending: 設定未完了のためスキップ', { url: s.serverUrl, user: s.username });
+        await log(`uploadPending: 設定未完了のためスキップ url=${s.serverUrl} user=${s.username}`);
         return;
       }
 
       const pending = recordingsRef.current.filter(
         r => r.uploadStatus === 'waiting' || r.uploadStatus === 'failed'
       );
-      console.log(`uploadPending: ${pending.length}件のアップロード待ち`);
+      await log(`uploadPending: ${pending.length}件のアップロード待ち`);
 
       for (const rec of pending) {
         // uploading に更新
@@ -178,9 +179,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setRecordings([...updating]);
         saveRecordings(updating);
 
-        console.log(`uploading: ${rec.filename} → ${s.serverUrl}`);
         const result = await uploadRecording(s, rec);
-        console.log(`upload result: ${rec.filename} → ok=${result.ok}`);
+
+        if (result.fileMissing) {
+          await log(`Upload: ファイル消失のため失敗 ${rec.filename} uri=${rec.uri}`);
+        }
 
         // 結果を反映
         const updated = recordingsRef.current.map(r =>

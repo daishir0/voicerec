@@ -16,13 +16,15 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "jp.path-finder.voicerec",
-      "buildNumber": "5",
+      "buildNumber": "6",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "録音機能を使用するためにマイクへのアクセスが必要です",
         "UIBackgroundModes": [
           "audio"
         ],
-        "ITSAppUsesNonExemptEncryption": false
+        "ITSAppUsesNonExemptEncryption": false,
+        "UIFileSharingEnabled": true,
+        "LSSupportsOpeningDocumentsInPlace": true
       }
     },
     "android": {

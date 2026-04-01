@@ -6,9 +6,13 @@ import {
   setAudioModeAsync,
   requestRecordingPermissionsAsync,
 } from 'expo-audio';
+import * as FileSystem from 'expo-file-system/legacy';
 import { useApp } from '@/contexts/AppContext';
 import { RecordButton } from '@/components/RecordButton';
 import { getFileExtension, getMimeType, WHISPER_PRESET, FALLBACK_PRESET } from '@/services/audio-recorder';
+import { log } from '@/services/logger';
+
+const RECORDINGS_DIR = FileSystem.documentDirectory + 'recordings/';
 
 function generateId(): string {
   const chars = 'abcdef0123456789';
@@ -139,23 +143,33 @@ export default function RecordScreen() {
       const uri = finalState.url || state.url;
 
       if (!uri) {
-        console.warn('No URI from recorder');
+        await log('stopRecording: No URI from recorder');
         return;
       }
 
       const ext = getFileExtension();
       const filename = filenameRef.current || generateFilename(ext);
 
+      // Documentsディレクトリに移動（キャッシュからの保全）
+      const dirInfo = await FileSystem.getInfoAsync(RECORDINGS_DIR);
+      if (!dirInfo.exists) {
+        await FileSystem.makeDirectoryAsync(RECORDINGS_DIR, { intermediates: true });
+      }
+      const destUri = RECORDINGS_DIR + filename;
+      await FileSystem.moveAsync({ from: uri, to: destUri });
+      await log(`Recording moved: ${uri} → ${destUri}`);
+
       let fileSize = 0;
       try {
-        const resp = await fetch(uri);
-        const blob = await resp.blob();
-        fileSize = blob.size;
+        const info = await FileSystem.getInfoAsync(destUri);
+        if (info.exists && 'size' in info) {
+          fileSize = info.size ?? 0;
+        }
       } catch {}
 
       const entry = {
         id: generateId(),
-        uri,
+        uri: destUri,
         filename,
         displayName: filename.replace(ext, ''),
         duration: durationMs,
@@ -166,6 +180,7 @@ export default function RecordScreen() {
       };
 
       await addRecording(entry);
+      await log(`Recording added: ${filename} size=${fileSize} duration=${durationMs}ms`);
       uploadPending();
     } catch (err: any) {
       console.error('stopRecording error:', err);
