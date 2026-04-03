@@ -6,6 +6,7 @@ import {
   StyleSheet,
   Pressable,
   ScrollView,
+  Switch,
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
@@ -16,7 +17,7 @@ import { useApp } from '@/contexts/AppContext';
 import { testConnection } from '@/services/upload-service';
 
 export default function SettingsScreen() {
-  const { theme, settings, updateSettings } = useApp();
+  const { theme, settings, updateSettings, isDebugMode, debugLogs, toggleDebugMode, clearDebugLogs } = useApp();
   const router = useRouter();
 
   const [serverUrl, setServerUrl] = useState(settings.serverUrl);
@@ -118,6 +119,42 @@ export default function SettingsScreen() {
             </View>
           )}
         </Pressable>
+
+        {/* デバッグセクション */}
+        <View style={[styles.debugSection, { borderTopColor: theme.border }]}>
+          <View style={styles.debugToggleRow}>
+            <Text style={[styles.label, { color: theme.textSecondary, marginTop: 0 }]}>デバッグモード</Text>
+            <Switch
+              value={isDebugMode}
+              onValueChange={toggleDebugMode}
+              trackColor={{ false: theme.bgTertiary, true: theme.accent }}
+            />
+          </View>
+        </View>
+
+        {isDebugMode && (
+          <View style={styles.debugLogSection}>
+            <View style={styles.debugLogHeader}>
+              <Text style={[styles.label, { color: theme.textSecondary, marginTop: 0 }]}>デバッグログ</Text>
+              <Pressable onPress={clearDebugLogs}>
+                <Text style={{ color: theme.accent, fontSize: 13 }}>クリア</Text>
+              </Pressable>
+            </View>
+            <View style={[styles.debugLogBox, { backgroundColor: theme.bgSecondary, borderColor: theme.border }]}>
+              {debugLogs.length === 0 ? (
+                <Text style={[styles.debugLogText, { color: theme.textSecondary }]}>
+                  ログはまだありません。再送信を試行するとここにログが表示されます。
+                </Text>
+              ) : (
+                debugLogs.map((line, i) => (
+                  <Text key={i} style={[styles.debugLogText, { color: theme.text }]}>
+                    {line}
+                  </Text>
+                ))
+              )}
+            </View>
+          </View>
+        )}
       </ScrollView>
     </KeyboardAvoidingView>
   );
@@ -177,5 +214,36 @@ const styles = StyleSheet.create({
   },
   buttonText: {
     fontSize: 16,
+  },
+  debugSection: {
+    marginTop: 32,
+    paddingTop: 16,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
+  debugToggleRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+  },
+  debugLogSection: {
+    marginTop: 12,
+  },
+  debugLogHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 6,
+  },
+  debugLogBox: {
+    borderRadius: 10,
+    borderWidth: StyleSheet.hairlineWidth,
+    padding: 10,
+    maxHeight: 300,
+  },
+  debugLogText: {
+    fontSize: 11,
+    fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
+    lineHeight: 16,
+    marginBottom: 2,
   },
 });

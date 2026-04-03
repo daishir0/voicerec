@@ -3,6 +3,34 @@ import { ServerSettings, RecordingEntry } from '@/types/recording';
 import { log } from './logger';
 
 const UPLOAD_TIMEOUT_MS = 30000;
+const RECORDINGS_DIR = FileSystem.documentDirectory + 'recordings/';
+
+/**
+ * iOSのコンテナUUID変更に対応: 保存済みURIが無効な場合、
+ * ファイル名を抽出して現在のdocumentDirectoryから再構築する
+ */
+async function resolveRecordingUri(storedUri: string): Promise<{ uri: string; resolved: boolean }> {
+  // まず保存済みURIでチェック
+  try {
+    const info = await FileSystem.getInfoAsync(storedUri);
+    if (info.exists) return { uri: storedUri, resolved: false };
+  } catch {}
+
+  // URIが無効 → ファイル名を抽出して現在のディレクトリで再構築
+  const filename = storedUri.split('/').pop();
+  if (!filename) return { uri: storedUri, resolved: false };
+
+  const newUri = RECORDINGS_DIR + filename;
+  try {
+    const info = await FileSystem.getInfoAsync(newUri);
+    if (info.exists) {
+      await log(`URI resolved: ${storedUri} → ${newUri}`);
+      return { uri: newUri, resolved: true };
+    }
+  } catch {}
+
+  return { uri: storedUri, resolved: false };
+}
 
 export async function testConnection(settings: ServerSettings): Promise<boolean> {
   const { serverUrl, username, password } = settings;
@@ -32,19 +60,26 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export async function uploadRecording(
   settings: ServerSettings,
   recording: RecordingEntry
-): Promise<{ ok: boolean; serverId?: string; fileMissing?: boolean }> {
+): Promise<{ ok: boolean; serverId?: string; fileMissing?: boolean; resolvedUri?: string }> {
   const { serverUrl, username, password } = settings;
   const auth = btoa(`${username}:${password}`);
 
-  // ファイル存在チェック
+  // ファイル存在チェック（iOSコンテナUUID変更に対応）
+  const { uri: resolvedUri, resolved } = await resolveRecordingUri(recording.uri);
+  if (resolved) {
+    // URI が解決された場合、呼び出し元に通知するためにrecordingを更新
+    recording = { ...recording, uri: resolvedUri };
+  }
+
   try {
-    const fileInfo = await FileSystem.getInfoAsync(recording.uri);
+    const fileInfo = await FileSystem.getInfoAsync(resolvedUri);
     if (!fileInfo.exists) {
-      await log(`Upload skip: file not found: ${recording.uri}`);
+      await log(`Upload skip: file not found: ${recording.uri} (resolved=${resolvedUri})`);
       return { ok: false, fileMissing: true };
     }
+    await log(`Upload: file confirmed at ${resolvedUri} (resolved=${resolved})`);
   } catch (err) {
-    await log(`Upload skip: file check error: ${recording.uri} ${err}`);
+    await log(`Upload skip: file check error: ${resolvedUri} ${err}`);
     return { ok: false, fileMissing: true };
   }
 
@@ -54,7 +89,7 @@ export async function uploadRecording(
     const result = await withTimeout(
       FileSystem.uploadAsync(
         `${serverUrl}/api/recordings/upload`,
-        recording.uri,
+        resolvedUri,
         {
           httpMethod: 'POST',
           uploadType: FileSystem.FileSystemUploadType.MULTIPART,
@@ -78,10 +113,10 @@ export async function uploadRecording(
       try {
         const data = JSON.parse(result.body);
         await log(`Upload success (uploadAsync): ${recording.filename} serverId=${data.id}`);
-        return { ok: true, serverId: data.id };
+        return { ok: true, serverId: data.id, resolvedUri: resolved ? resolvedUri : undefined };
       } catch {
         await log(`Upload success (uploadAsync): ${recording.filename} (no body parse)`);
-        return { ok: true };
+        return { ok: true, resolvedUri: resolved ? resolvedUri : undefined };
       }
     }
     await log(`Upload failed (uploadAsync): status=${result.status} body=${result.body}`);
@@ -94,7 +129,7 @@ export async function uploadRecording(
     await log(`Upload start (fetch fallback): ${recording.filename}`);
     const formData = new FormData();
     formData.append('file', {
-      uri: recording.uri,
+      uri: resolvedUri,
       name: recording.filename,
       type: recording.mimeType,
     } as any);
@@ -115,7 +150,7 @@ export async function uploadRecording(
     if (response.ok) {
       const data = await response.json();
       await log(`Upload success (fetch): ${recording.filename} serverId=${data.id}`);
-      return { ok: true, serverId: data.id };
+      return { ok: true, serverId: data.id, resolvedUri: resolved ? resolvedUri : undefined };
     }
     await log(`Upload failed (fetch): status=${response.status}`);
   } catch (err) {

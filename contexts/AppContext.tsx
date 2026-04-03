@@ -1,6 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
 import { useColorScheme, AppState } from 'react-native';
-import * as FileSystem from 'expo-file-system';
+import * as FileSystem from 'expo-file-system/legacy';
 import { ServerSettings, RecordingEntry } from '@/types/recording';
 import { loadSettings, saveSettings, loadRecordings, saveRecordings } from '@/services/storage-service';
 import { uploadRecording } from '@/services/upload-service';
@@ -8,6 +8,8 @@ import { log } from '@/services/logger';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const DARK_MODE_KEY = 'rec18082_darkMode';
+const DEBUG_MODE_KEY = 'rec18082_debugMode';
+const RECORDINGS_DIR = FileSystem.documentDirectory + 'recordings/';
 
 interface Theme {
   bg: string;
@@ -24,6 +26,8 @@ interface AppContextType {
   settings: ServerSettings;
   recordings: RecordingEntry[];
   isDarkMode: boolean;
+  isDebugMode: boolean;
+  debugLogs: string[];
   theme: Theme;
   updateSettings: (settings: ServerSettings) => Promise<void>;
   addRecording: (recording: RecordingEntry) => Promise<void>;
@@ -32,6 +36,8 @@ interface AppContextType {
   uploadPending: () => void;
   retryUpload: (id: string) => void;
   toggleDarkMode: () => void;
+  toggleDebugMode: () => void;
+  clearDebugLogs: () => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -51,6 +57,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   });
   const [recordings, setRecordings] = useState<RecordingEntry[]>([]);
   const [isDarkMode, setIsDarkMode] = useState(systemColorScheme === 'dark');
+  const [isDebugMode, setIsDebugMode] = useState(false);
+  const [debugLogs, setDebugLogs] = useState<string[]>([]);
   const [loaded, setLoaded] = useState(false);
 
   // Refs で常に最新の値を参照できるようにする
@@ -59,17 +67,35 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const uploadingRef = useRef(false);
+  const debugModeRef = useRef(isDebugMode);
+  debugModeRef.current = isDebugMode;
+
+  // デバッグログ追加（最新50件を保持）
+  const addDebugLog = useCallback((message: string) => {
+    const ts = new Date().toLocaleTimeString('ja-JP');
+    const line = `[${ts}] ${message}`;
+    console.log(`[DEBUG] ${message}`);
+    setDebugLogs(prev => [line, ...prev].slice(0, 50));
+  }, []);
 
   useEffect(() => {
     (async () => {
-      const [savedSettings, savedRecordings, savedDark] = await Promise.all([
+      const [savedSettings, savedRecordings, savedDark, savedDebug] = await Promise.all([
         loadSettings(),
         loadRecordings(),
         AsyncStorage.getItem(DARK_MODE_KEY),
+        AsyncStorage.getItem(DEBUG_MODE_KEY),
       ]);
       if (savedSettings) setSettings(savedSettings);
-      if (savedRecordings.length) setRecordings(savedRecordings);
+      if (savedDebug !== null) setIsDebugMode(savedDebug === 'true');
       if (savedDark !== null) setIsDarkMode(savedDark === 'true');
+
+      // URI修復: iOSコンテナUUID変更に対応
+      if (savedRecordings.length) {
+        const fixed = await repairRecordingUris(savedRecordings);
+        setRecordings(fixed);
+        recordingsRef.current = fixed;
+      }
       setLoaded(true);
     })();
   }, []);
@@ -82,6 +108,45 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         .then(() => doUploadPending());
     }
   }, [loaded]);
+
+  // URI修復: iOSコンテナUUID変更で保存済み絶対パスが無効になった場合に再構築
+  async function repairRecordingUris(recs: RecordingEntry[]): Promise<RecordingEntry[]> {
+    let changed = false;
+    const repaired = await Promise.all(
+      recs.map(async (rec) => {
+        if (rec.uploadStatus === 'uploaded') return rec; // 送信済みは修復不要
+
+        // 現在のURIが有効ならそのまま
+        try {
+          const info = await FileSystem.getInfoAsync(rec.uri);
+          if (info.exists) return rec;
+        } catch {}
+
+        // ファイル名を抽出して現在のdocumentDirectoryで再構築
+        const filename = rec.uri.split('/').pop();
+        if (!filename) return rec;
+
+        const newUri = RECORDINGS_DIR + filename;
+        try {
+          const info = await FileSystem.getInfoAsync(newUri);
+          if (info.exists) {
+            await log(`URI repaired: ${rec.uri} → ${newUri}`);
+            addDebugLog(`URI修復: ${filename}`);
+            changed = true;
+            return { ...rec, uri: newUri };
+          }
+        } catch {}
+
+        addDebugLog(`URI修復失敗: ${filename} (ファイルが見つかりません)`);
+        return rec;
+      })
+    );
+
+    if (changed) {
+      await saveRecordings(repaired);
+    }
+    return repaired;
+  }
 
   // Retry failed uploads when app returns to foreground
   const doUploadRef = useRef<() => Promise<void>>(undefined);
@@ -181,19 +246,28 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setRecordings([...updating]);
         await saveRecordings(updating);
 
+        addDebugLog(`アップロード開始: ${rec.filename}`);
         const result = await uploadRecording(s, rec);
 
         if (result.fileMissing) {
           await log(`Upload: ファイル消失のため失敗 ${rec.filename} uri=${rec.uri}`);
+          addDebugLog(`ファイル消失: ${rec.filename} uri=${rec.uri}`);
         }
 
-        // 結果を反映
+        if (result.ok) {
+          addDebugLog(`アップロード成功: ${rec.filename}`);
+        } else if (!result.fileMissing) {
+          addDebugLog(`アップロード失敗: ${rec.filename}`);
+        }
+
+        // 結果を反映（URI解決された場合はURIも更新）
         const updated = recordingsRef.current.map(r =>
           r.id === rec.id
             ? {
                 ...r,
                 uploadStatus: result.ok ? ('uploaded' as const) : ('failed' as const),
                 serverId: result.serverId ?? r.serverId,
+                ...(result.resolvedUri ? { uri: result.resolvedUri } : {}),
               }
             : r
         );
@@ -264,12 +338,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     });
   }, []);
 
+  const toggleDebugMode = useCallback(() => {
+    setIsDebugMode(prev => {
+      const next = !prev;
+      AsyncStorage.setItem(DEBUG_MODE_KEY, String(next));
+      return next;
+    });
+  }, []);
+
+  const clearDebugLogs = useCallback(() => {
+    setDebugLogs([]);
+  }, []);
+
   return (
     <AppContext.Provider
       value={{
         settings,
         recordings,
         isDarkMode,
+        isDebugMode,
+        debugLogs,
         theme,
         updateSettings: updateSettingsHandler,
         addRecording,
@@ -278,6 +366,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         uploadPending,
         retryUpload,
         toggleDarkMode,
+        toggleDebugMode,
+        clearDebugLogs,
       }}
     >
       {children}
