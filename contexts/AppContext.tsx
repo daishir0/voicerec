@@ -74,10 +74,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     })();
   }, []);
 
-  // Cleanup old uploaded recordings (24h+) and auto-upload on mount
+  // Cleanup old uploaded recordings (24h+), reset stale uploads, and auto-upload on mount
   useEffect(() => {
     if (loaded) {
-      cleanupOldRecordings().then(() => doUploadPending());
+      cleanupOldRecordings()
+        .then(() => resetStaleUploads())
+        .then(() => doUploadPending());
     }
   }, [loaded]);
 
@@ -177,7 +179,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         );
         recordingsRef.current = updating;
         setRecordings([...updating]);
-        saveRecordings(updating);
+        await saveRecordings(updating);
 
         const result = await uploadRecording(s, rec);
 
@@ -197,25 +199,40 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         );
         recordingsRef.current = updated;
         setRecordings([...updated]);
-        saveRecordings(updated);
+        await saveRecordings(updated);
       }
     } finally {
       uploadingRef.current = false;
     }
   }, []);
 
+  // stale な 'uploading' を 'waiting' にリセットして再アップロード対象にする
+  const resetStaleUploads = useCallback(async () => {
+    const stale = recordingsRef.current.filter(r => r.uploadStatus === 'uploading');
+    if (stale.length === 0) return;
+
+    await log(`resetStaleUploads: ${stale.length}件の中断アップロードをリセット`);
+    const staleIds = new Set(stale.map(r => r.id));
+    const next = recordingsRef.current.map(r =>
+      staleIds.has(r.id) ? { ...r, uploadStatus: 'waiting' as const } : r
+    );
+    recordingsRef.current = next;
+    setRecordings([...next]);
+    await saveRecordings(next);
+  }, []);
+
   // doUploadRefに最新の関数を保持
   doUploadRef.current = doUploadPending;
 
-  // フォアグラウンド復帰時にリトライ
+  // フォアグラウンド復帰時に、staleリセット→リトライ
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active' && loaded) {
-        doUploadRef.current?.();
+        resetStaleUploads().then(() => doUploadRef.current?.());
       }
     });
     return () => sub.remove();
-  }, [loaded]);
+  }, [loaded, resetStaleUploads]);
 
   // uploadPending は常に最新のref値を使うので依存配列空でOK
   const uploadPending = useCallback(() => {
