@@ -67,6 +67,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const settingsRef = useRef(settings);
   settingsRef.current = settings;
   const uploadingRef = useRef(false);
+  const uploadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const debugModeRef = useRef(isDebugMode);
   debugModeRef.current = isDebugMode;
 
@@ -233,7 +234,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
 
       const pending = recordingsRef.current.filter(
-        r => r.uploadStatus === 'waiting' || r.uploadStatus === 'failed'
+        r => (r.uploadStatus === 'waiting' || r.uploadStatus === 'failed') && !r.serverId
       );
       await log(`uploadPending: ${pending.length}件のアップロード待ち`);
 
@@ -281,7 +282,9 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, []);
 
   // stale な 'uploading' を 'waiting' にリセットして再アップロード対象にする
+  // アップロードループ実行中は実行しない（in-flightのアップロードを誤ってリセットしないため）
   const resetStaleUploads = useCallback(async () => {
+    if (uploadingRef.current) return;
     const stale = recordingsRef.current.filter(r => r.uploadStatus === 'uploading');
     if (stale.length === 0) return;
 
@@ -309,9 +312,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   }, [loaded, resetStaleUploads]);
 
   // uploadPending は常に最新のref値を使うので依存配列空でOK
+  // タイマーをキャンセル可能にして重複トリガーを防止
   const uploadPending = useCallback(() => {
-    // 少し遅延させて、addRecordingのstate反映を待つ
-    setTimeout(() => doUploadPending(), 500);
+    if (uploadTimerRef.current) clearTimeout(uploadTimerRef.current);
+    uploadTimerRef.current = setTimeout(() => {
+      uploadTimerRef.current = null;
+      doUploadPending();
+    }, 500);
   }, [doUploadPending]);
 
   // 個別の録音を手動リトライ
@@ -319,16 +326,16 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     const rec = recordingsRef.current.find(r => r.id === id);
     if (!rec || rec.uploadStatus === 'uploading' || rec.uploadStatus === 'uploaded') return;
 
-    // waitingに戻してからアップロード実行
+    // waitingに戻し、serverIdもクリアしてからアップロード実行
     const next = recordingsRef.current.map(r =>
-      r.id === id ? { ...r, uploadStatus: 'waiting' as const } : r
+      r.id === id ? { ...r, uploadStatus: 'waiting' as const, serverId: undefined } : r
     );
     recordingsRef.current = next;
     setRecordings([...next]);
     saveRecordings(next);
 
-    setTimeout(() => doUploadPending(), 100);
-  }, [doUploadPending]);
+    uploadPending();
+  }, [uploadPending]);
 
   const toggleDarkMode = useCallback(() => {
     setIsDarkMode(prev => {
