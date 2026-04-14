@@ -17,4 +17,6 @@ export interface ServerSettings {
   serverUrl: string;
   username: string;
   password: string;
+  /** 初回ログイン後にサーバーが発行する Bearer token。以降の通信はこれを使用。 */
+  token?: string | null;
 }

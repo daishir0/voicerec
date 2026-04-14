@@ -271,6 +271,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           addDebugLog(`アップロード失敗: ${rec.filename}`);
         }
 
+        // 新規発行された token があれば settings に保存
+        if (result.newToken) {
+          const nextSettings = { ...settingsRef.current, token: result.newToken };
+          settingsRef.current = nextSettings;
+          setSettings(nextSettings);
+          await saveSettings(nextSettings);
+          addDebugLog('Bearer token を更新しました');
+        }
+
         // 結果を反映（URI解決された場合はURIも更新）
         const updated = recordingsRef.current.map(r =>
           r.id === rec.id

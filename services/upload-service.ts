@@ -32,19 +32,60 @@ async function resolveRecordingUri(storedUri: string): Promise<{ uri: string; re
   return { uri: storedUri, resolved: false };
 }
 
-export async function testConnection(settings: ServerSettings): Promise<boolean> {
-  const { serverUrl, username, password } = settings;
-  const auth = btoa(`${username}:${password}`);
-
+/**
+ * username + password でログインして Bearer token を取得する。
+ * 成功すると { token, userId, username, role } を返す。
+ */
+export async function loginAndGetToken(
+  serverUrl: string,
+  username: string,
+  password: string
+): Promise<{ token: string; userId: string; username: string; role: string } | null> {
   try {
-    const response = await fetch(`${serverUrl}/api/auth/test`, {
+    const res = await fetch(`${serverUrl}/api/auth/login`, {
       method: 'POST',
-      headers: { Authorization: `Basic ${auth}` },
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ username, password, deviceLabel: 'rec18082' }),
     });
-    return response.ok;
-  } catch {
-    return false;
+    if (!res.ok) {
+      await log(`Login failed: status=${res.status}`);
+      return null;
+    }
+    const data = await res.json();
+    if (!data?.token) return null;
+    return data;
+  } catch (err) {
+    await log(`Login error: ${err}`);
+    return null;
   }
+}
+
+export async function testConnection(settings: ServerSettings): Promise<boolean> {
+  // 新方式: 既存 token があれば /api/auth/test を Bearer で叩く
+  // token がなければ username/password でログインして token を取得
+  const { serverUrl, username, password, token } = settings;
+
+  const tryBearer = async (bearerToken: string): Promise<boolean> => {
+    try {
+      const response = await fetch(`${serverUrl}/api/auth/test`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${bearerToken}` },
+      });
+      return response.ok;
+    } catch {
+      return false;
+    }
+  };
+
+  if (token) {
+    const ok = await tryBearer(token);
+    if (ok) return true;
+  }
+
+  // トークンがない or 無効 → ログインして取得
+  const login = await loginAndGetToken(serverUrl, username, password);
+  if (!login) return false;
+  return tryBearer(login.token);
 }
 
 function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
@@ -60,9 +101,22 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 export async function uploadRecording(
   settings: ServerSettings,
   recording: RecordingEntry
-): Promise<{ ok: boolean; serverId?: string; fileMissing?: boolean; resolvedUri?: string }> {
+): Promise<{ ok: boolean; serverId?: string; fileMissing?: boolean; resolvedUri?: string; newToken?: string }> {
   const { serverUrl, username, password } = settings;
-  const auth = btoa(`${username}:${password}`);
+
+  // Bearer token を取得 (既存 or 新規ログイン)
+  let token = settings.token ?? null;
+  let newToken: string | undefined;
+  if (!token) {
+    const login = await loginAndGetToken(serverUrl, username, password);
+    if (!login) {
+      await log('Upload abort: login failed');
+      return { ok: false };
+    }
+    token = login.token;
+    newToken = login.token;
+  }
+  const authHeader = `Bearer ${token}`;
 
   // ファイル存在チェック（iOSコンテナUUID変更に対応）
   const { uri: resolvedUri, resolved } = await resolveRecordingUri(recording.uri);
@@ -100,7 +154,7 @@ export async function uploadRecording(
             duration: String(recording.duration),
           },
           headers: {
-            Authorization: `Basic ${auth}`,
+            Authorization: authHeader,
           },
           sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
         }
@@ -113,10 +167,10 @@ export async function uploadRecording(
       try {
         const data = JSON.parse(result.body);
         await log(`Upload success (uploadAsync): ${recording.filename} serverId=${data.id}`);
-        return { ok: true, serverId: data.id, resolvedUri: resolved ? resolvedUri : undefined };
+        return { ok: true, serverId: data.id, resolvedUri: resolved ? resolvedUri : undefined, newToken };
       } catch {
         await log(`Upload success (uploadAsync): ${recording.filename} (no body parse)`);
-        return { ok: true, resolvedUri: resolved ? resolvedUri : undefined };
+        return { ok: true, resolvedUri: resolved ? resolvedUri : undefined, newToken };
       }
     }
     await log(`Upload failed (uploadAsync): status=${result.status} body=${result.body}`);
@@ -140,7 +194,7 @@ export async function uploadRecording(
     const response = await withTimeout(
       fetch(`${serverUrl}/api/recordings/upload`, {
         method: 'POST',
-        headers: { Authorization: `Basic ${auth}` },
+        headers: { Authorization: authHeader },
         body: formData,
       }),
       UPLOAD_TIMEOUT_MS,
@@ -150,7 +204,7 @@ export async function uploadRecording(
     if (response.ok) {
       const data = await response.json();
       await log(`Upload success (fetch): ${recording.filename} serverId=${data.id}`);
-      return { ok: true, serverId: data.id, resolvedUri: resolved ? resolvedUri : undefined };
+      return { ok: true, serverId: data.id, resolvedUri: resolved ? resolvedUri : undefined, newToken };
     }
     await log(`Upload failed (fetch): status=${response.status}`);
   } catch (err) {
