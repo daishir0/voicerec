@@ -5,10 +5,12 @@ import { ServerSettings, RecordingEntry } from '@/types/recording';
 import { loadSettings, saveSettings, loadRecordings, saveRecordings } from '@/services/storage-service';
 import { uploadRecording } from '@/services/upload-service';
 import { log } from '@/services/logger';
+import type { RecordingQuality } from '@/services/audio-recorder';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const DARK_MODE_KEY = 'rec18082_darkMode';
 const DEBUG_MODE_KEY = 'rec18082_debugMode';
+const RECORDING_QUALITY_KEY = 'rec18082_recordingQuality';
 const RECORDINGS_DIR = FileSystem.documentDirectory + 'recordings/';
 
 interface Theme {
@@ -28,6 +30,7 @@ interface AppContextType {
   isDarkMode: boolean;
   isDebugMode: boolean;
   debugLogs: string[];
+  recordingQuality: RecordingQuality;
   theme: Theme;
   updateSettings: (settings: ServerSettings) => Promise<void>;
   addRecording: (recording: RecordingEntry) => Promise<void>;
@@ -38,6 +41,8 @@ interface AppContextType {
   toggleDarkMode: () => void;
   toggleDebugMode: () => void;
   clearDebugLogs: () => void;
+  addDebugLog: (message: string) => void;
+  setRecordingQuality: (quality: RecordingQuality) => void;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -59,6 +64,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [isDarkMode, setIsDarkMode] = useState(systemColorScheme === 'dark');
   const [isDebugMode, setIsDebugMode] = useState(false);
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
+  const [recordingQuality, setRecordingQualityState] = useState<RecordingQuality>('standard');
   const [loaded, setLoaded] = useState(false);
 
   // Refs で常に最新の値を参照できるようにする
@@ -81,15 +87,19 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     (async () => {
-      const [savedSettings, savedRecordings, savedDark, savedDebug] = await Promise.all([
+      const [savedSettings, savedRecordings, savedDark, savedDebug, savedQuality] = await Promise.all([
         loadSettings(),
         loadRecordings(),
         AsyncStorage.getItem(DARK_MODE_KEY),
         AsyncStorage.getItem(DEBUG_MODE_KEY),
+        AsyncStorage.getItem(RECORDING_QUALITY_KEY),
       ]);
       if (savedSettings) setSettings(savedSettings);
       if (savedDebug !== null) setIsDebugMode(savedDebug === 'true');
       if (savedDark !== null) setIsDarkMode(savedDark === 'true');
+      if (savedQuality === 'high' || savedQuality === 'standard') {
+        setRecordingQualityState(savedQuality);
+      }
 
       // URI修復: iOSコンテナUUID変更に対応
       if (savedRecordings.length) {
@@ -357,6 +367,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setDebugLogs([]);
   }, []);
 
+  const setRecordingQuality = useCallback((quality: RecordingQuality) => {
+    setRecordingQualityState(quality);
+    AsyncStorage.setItem(RECORDING_QUALITY_KEY, quality);
+  }, []);
+
   return (
     <AppContext.Provider
       value={{
@@ -365,6 +380,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         isDarkMode,
         isDebugMode,
         debugLogs,
+        recordingQuality,
         theme,
         updateSettings: updateSettingsHandler,
         addRecording,
@@ -375,6 +391,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         toggleDarkMode,
         toggleDebugMode,
         clearDebugLogs,
+        addDebugLog,
+        setRecordingQuality,
       }}
     >
       {children}

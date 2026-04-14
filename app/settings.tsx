@@ -17,7 +17,17 @@ import { useApp } from '@/contexts/AppContext';
 import { testConnection } from '@/services/upload-service';
 
 export default function SettingsScreen() {
-  const { theme, settings, updateSettings, isDebugMode, debugLogs, toggleDebugMode, clearDebugLogs } = useApp();
+  const {
+    theme,
+    settings,
+    updateSettings,
+    isDebugMode,
+    debugLogs,
+    toggleDebugMode,
+    clearDebugLogs,
+    recordingQuality,
+    setRecordingQuality,
+  } = useApp();
   const router = useRouter();
 
   const [serverUrl, setServerUrl] = useState(settings.serverUrl);
@@ -119,6 +129,27 @@ export default function SettingsScreen() {
             </View>
           )}
         </Pressable>
+
+        {/* 録音品質セクション */}
+        <View style={[styles.debugSection, { borderTopColor: theme.border }]}>
+          <View style={styles.debugToggleRow}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={[styles.label, { color: theme.textSecondary, marginTop: 0 }]}>
+                高品質録音
+              </Text>
+              <Text style={[styles.qualityHint, { color: theme.textSecondary }]}>
+                {recordingQuality === 'high'
+                  ? '16kHz / 32kbps ・ 約240KB/分'
+                  : '12kHz / 16kbps ・ 約120KB/分（通常）'}
+              </Text>
+            </View>
+            <Switch
+              value={recordingQuality === 'high'}
+              onValueChange={(v) => setRecordingQuality(v ? 'high' : 'standard')}
+              trackColor={{ false: theme.bgTertiary, true: theme.accent }}
+            />
+          </View>
+        </View>
 
         {/* デバッグセクション */}
         <View style={[styles.debugSection, { borderTopColor: theme.border }]}>
@@ -245,5 +276,9 @@ const styles = StyleSheet.create({
     fontFamily: Platform.OS === 'ios' ? 'Menlo' : 'monospace',
     lineHeight: 16,
     marginBottom: 2,
+  },
+  qualityHint: {
+    fontSize: 12,
+    marginTop: 2,
   },
 });

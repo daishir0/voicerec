@@ -9,7 +9,7 @@ import {
 import * as FileSystem from 'expo-file-system/legacy';
 import { useApp } from '@/contexts/AppContext';
 import { RecordButton } from '@/components/RecordButton';
-import { getFileExtension, getMimeType, WHISPER_PRESET, FALLBACK_PRESET } from '@/services/audio-recorder';
+import { getFileExtension, getMimeType, getPresetForQuality, FALLBACK_PRESET } from '@/services/audio-recorder';
 import { log } from '@/services/logger';
 
 const RECORDINGS_DIR = FileSystem.documentDirectory + 'recordings/';
@@ -42,7 +42,7 @@ function generateFilename(ext: string): string {
 }
 
 export default function RecordScreen() {
-  const { theme, addRecording, uploadPending } = useApp();
+  const { theme, addRecording, uploadPending, recordingQuality, addDebugLog } = useApp();
   const [isRecording, setIsRecording] = useState(false);
   const [useFallback, setUseFallback] = useState(false);
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
@@ -66,7 +66,8 @@ export default function RecordScreen() {
     })();
   }, []);
 
-  const recorder = useAudioRecorder(WHISPER_PRESET);
+  const primaryPreset = getPresetForQuality(recordingQuality);
+  const recorder = useAudioRecorder(primaryPreset);
   const recorderState = useAudioRecorderState(recorder, 500);
   const fallbackRecorder = useAudioRecorder(FALLBACK_PRESET);
   const fallbackState = useAudioRecorderState(fallbackRecorder, 500);
@@ -85,11 +86,12 @@ export default function RecordScreen() {
     return granted;
   };
 
-  const activeRecorder = () => useFallback ? fallbackRecorder : recorder;
-
   const startRecording = async () => {
     const permitted = await requestPermission();
     if (!permitted) return;
+
+    // 録音開始ごとにフォールバック状態をリセット（前回の失敗を引きずらない）
+    setUseFallback(false);
 
     try {
       // 録音モードが未準備なら再度設定
@@ -104,26 +106,32 @@ export default function RecordScreen() {
 
       filenameRef.current = generateFilename(getFileExtension());
 
-      const rec = activeRecorder();
-      await rec.prepareToRecordAsync();
-      rec.record();
+      await recorder.prepareToRecordAsync();
+      recorder.record();
       setIsRecording(true);
     } catch (err: any) {
-      // Whisperプリセットが失敗したらHIGH_QUALITYにフォールバック
-      if (!useFallback) {
-        console.warn('Whisper preset failed, falling back to HIGH_QUALITY:', err?.message);
+      const errMsg = err?.message ?? String(err);
+      addDebugLog(`Primary preset (${recordingQuality}) failed: ${errMsg}`);
+      await log(`Primary preset failed (quality=${recordingQuality}): ${errMsg}\n${err?.stack ?? ''}`);
+
+      Alert.alert(
+        '音質低下',
+        `選択中の録音品質で開始できなかったため、フォールバック設定で録音を継続します。\n\n原因: ${errMsg}`
+      );
+
+      try {
         setUseFallback(true);
-        try {
-          await fallbackRecorder.prepareToRecordAsync();
-          fallbackRecorder.record();
-          setIsRecording(true);
-          return;
-        } catch (err2: any) {
-          console.error('Fallback also failed:', err2);
-        }
+        await fallbackRecorder.prepareToRecordAsync();
+        fallbackRecorder.record();
+        setIsRecording(true);
+        return;
+      } catch (err2: any) {
+        const err2Msg = err2?.message ?? String(err2);
+        addDebugLog(`Fallback also failed: ${err2Msg}`);
+        await log(`Fallback also failed: ${err2Msg}\n${err2?.stack ?? ''}`);
+        setUseFallback(false);
+        Alert.alert('エラー', '録音を開始できませんでした。\n' + err2Msg);
       }
-      console.error('startRecording error:', err);
-      Alert.alert('エラー', '録音を開始できませんでした。\n' + (err?.message ?? ''));
     }
   };
 

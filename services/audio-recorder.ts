@@ -27,7 +27,37 @@ export const WHISPER_PRESET: RecordingOptions = {
   },
 };
 
+// 高品質モード（Whisperのネイティブ16kHzに合わせ、無駄なく品質アップ）
+// 16kHz / mono / 32kbps AAC — 通常(12kHz/16kbps)の約2倍(~240KB/分)
+export const WHISPER_HIGH_QUALITY_PRESET: RecordingOptions = {
+  extension: '.m4a',
+  sampleRate: 16000,
+  numberOfChannels: 1,
+  bitRate: 32000,
+  android: {
+    outputFormat: 'mpeg4',
+    audioEncoder: 'aac',
+  },
+  ios: {
+    outputFormat: IOSOutputFormat.MPEG4AAC,
+    audioQuality: AudioQuality.MEDIUM,
+    linearPCMBitDepth: 16,
+    linearPCMIsBigEndian: false,
+    linearPCMIsFloat: false,
+  },
+  web: {
+    mimeType: 'audio/mp4',
+    bitsPerSecond: 32000,
+  },
+};
+
 export const FALLBACK_PRESET = RecordingPresets.HIGH_QUALITY;
+
+export type RecordingQuality = 'standard' | 'high';
+
+export function getPresetForQuality(quality: RecordingQuality): RecordingOptions {
+  return quality === 'high' ? WHISPER_HIGH_QUALITY_PRESET : WHISPER_PRESET;
+}
 
 export function getFileExtension(): string {
   return '.m4a';
