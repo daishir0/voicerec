@@ -2,6 +2,7 @@ import React, { useState } from 'react';
 import { View, Text, FlatList, StyleSheet, Alert, Pressable, Linking, ActivityIndicator } from 'react-native';
 import { useApp } from '@/contexts/AppContext';
 import { RecordingListItem } from '@/components/RecordingListItem';
+import { loginAndGetToken } from '@/services/upload-service';
 
 export default function RecordingsScreen() {
   const { theme, recordings, updateRecording, settings } = useApp();
@@ -31,16 +32,24 @@ export default function RecordingsScreen() {
     if (!settings.serverUrl || openingServer) return;
     setOpeningServer(true);
     try {
-      const auth = btoa(`${settings.username}:${settings.password}`);
-      const res = await fetch(`${settings.serverUrl}/api/auth/ott`, {
-        method: 'POST',
-        headers: { Authorization: `Basic ${auth}` },
-      });
-      if (res.ok) {
-        const { token } = await res.json();
-        await Linking.openURL(`${settings.serverUrl}/user/api/auto-login?token=${token}`);
-        setOpeningServer(false);
-        return;
+      // Bearer token を取得 (保存済み or 新規ログイン)
+      let bearerToken = settings.token ?? null;
+      if (!bearerToken) {
+        const login = await loginAndGetToken(settings.serverUrl, settings.username, settings.password);
+        if (login) bearerToken = login.token;
+      }
+
+      if (bearerToken) {
+        const res = await fetch(`${settings.serverUrl}/api/auth/ott`, {
+          method: 'POST',
+          headers: { Authorization: `Bearer ${bearerToken}` },
+        });
+        if (res.ok) {
+          const { token } = await res.json();
+          await Linking.openURL(`${settings.serverUrl}/user/api/auto-login?token=${token}`);
+          setOpeningServer(false);
+          return;
+        }
       }
     } catch {}
     await Linking.openURL(settings.serverUrl);
