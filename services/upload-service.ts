@@ -156,7 +156,7 @@ export async function uploadRecording(
           headers: {
             Authorization: authHeader,
           },
-          sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
+          sessionType: FileSystem.FileSystemSessionType.FOREGROUND,
         }
       ),
       UPLOAD_TIMEOUT_MS,
