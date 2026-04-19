@@ -6,11 +6,19 @@ import { loadSettings, saveSettings, loadRecordings, saveRecordings } from '@/se
 import { uploadRecording } from '@/services/upload-service';
 import { log } from '@/services/logger';
 import type { RecordingQuality } from '@/services/audio-recorder';
+import {
+  getPermissionStatus as getNotificationPermissionStatus,
+  requestPermission as requestNotificationPermission,
+  notifyUploadSuccess,
+  notifyUploadFailed,
+  setBadgeCount,
+} from '@/services/notification-service';
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 const DARK_MODE_KEY = 'rec18082_darkMode';
 const DEBUG_MODE_KEY = 'rec18082_debugMode';
 const RECORDING_QUALITY_KEY = 'rec18082_recordingQuality';
+const NOTIFICATIONS_ENABLED_KEY = 'rec18082_notificationsEnabled';
 const RECORDINGS_DIR = FileSystem.documentDirectory + 'recordings/';
 
 interface Theme {
@@ -31,6 +39,7 @@ interface AppContextType {
   isDebugMode: boolean;
   debugLogs: string[];
   recordingQuality: RecordingQuality;
+  notificationsEnabled: boolean;
   theme: Theme;
   updateSettings: (settings: ServerSettings) => Promise<void>;
   addRecording: (recording: RecordingEntry) => Promise<void>;
@@ -43,6 +52,7 @@ interface AppContextType {
   clearDebugLogs: () => void;
   addDebugLog: (message: string) => void;
   setRecordingQuality: (quality: RecordingQuality) => void;
+  setNotificationsEnabled: (enabled: boolean) => Promise<boolean>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -65,6 +75,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [isDebugMode, setIsDebugMode] = useState(false);
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
   const [recordingQuality, setRecordingQualityState] = useState<RecordingQuality>('standard');
+  const [notificationsEnabled, setNotificationsEnabledState] = useState(false);
   const [loaded, setLoaded] = useState(false);
 
   // Refs で常に最新の値を参照できるようにする
@@ -76,6 +87,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const uploadTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const debugModeRef = useRef(isDebugMode);
   debugModeRef.current = isDebugMode;
+  const notificationsEnabledRef = useRef(notificationsEnabled);
+  notificationsEnabledRef.current = notificationsEnabled;
 
   // デバッグログ追加（最新50件を保持）
   const addDebugLog = useCallback((message: string) => {
@@ -87,18 +100,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     (async () => {
-      const [savedSettings, savedRecordings, savedDark, savedDebug, savedQuality] = await Promise.all([
+      const [savedSettings, savedRecordings, savedDark, savedDebug, savedQuality, savedNotify] = await Promise.all([
         loadSettings(),
         loadRecordings(),
         AsyncStorage.getItem(DARK_MODE_KEY),
         AsyncStorage.getItem(DEBUG_MODE_KEY),
         AsyncStorage.getItem(RECORDING_QUALITY_KEY),
+        AsyncStorage.getItem(NOTIFICATIONS_ENABLED_KEY),
       ]);
       if (savedSettings) setSettings(savedSettings);
       if (savedDebug !== null) setIsDebugMode(savedDebug === 'true');
       if (savedDark !== null) setIsDarkMode(savedDark === 'true');
       if (savedQuality === 'high' || savedQuality === 'standard') {
         setRecordingQualityState(savedQuality);
+      }
+      if (savedNotify === 'true') {
+        // 永続化 ON でも OS で拒否されていたら OFF に倒す
+        const perm = await getNotificationPermissionStatus();
+        const effective = perm === 'granted';
+        setNotificationsEnabledState(effective);
+        notificationsEnabledRef.current = effective;
+        if (!effective) await AsyncStorage.setItem(NOTIFICATIONS_ENABLED_KEY, 'false');
       }
 
       // URI修復: iOSコンテナUUID変更に対応
@@ -249,16 +271,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       await log(`uploadPending: ${pending.length}件のアップロード待ち`);
 
       for (const rec of pending) {
-        // uploading に更新
+        // uploading に更新（進捗 0 から開始）
         const updating = recordingsRef.current.map(r =>
-          r.id === rec.id ? { ...r, uploadStatus: 'uploading' as const } : r
+          r.id === rec.id ? { ...r, uploadStatus: 'uploading' as const, uploadProgress: 0 } : r
         );
         recordingsRef.current = updating;
         setRecordings([...updating]);
         await saveRecordings(updating);
 
         addDebugLog(`アップロード開始: ${rec.filename}`);
-        const result = await uploadRecording(s, rec);
+
+        // 進捗コールバックでリストを更新（過度な再レンダーを避けて 5% 以上変化したときだけ）
+        let lastReported = 0;
+        const result = await uploadRecording(s, rec, (progress) => {
+          if (progress - lastReported < 0.05 && progress < 1) return;
+          lastReported = progress;
+          const next = recordingsRef.current.map(r =>
+            r.id === rec.id ? { ...r, uploadProgress: progress } : r
+          );
+          recordingsRef.current = next;
+          setRecordings([...next]);
+        });
 
         if (result.fileMissing) {
           await log(`Upload: ファイル消失のため失敗 ${rec.filename} uri=${rec.uri}`);
@@ -267,8 +300,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
         if (result.ok) {
           addDebugLog(`アップロード成功: ${rec.filename}`);
+          if (notificationsEnabledRef.current) {
+            await notifyUploadSuccess(rec.displayName, rec.id);
+          }
         } else if (!result.fileMissing) {
           addDebugLog(`アップロード失敗: ${rec.filename}`);
+          if (notificationsEnabledRef.current) {
+            await notifyUploadFailed(rec.displayName, rec.id);
+          }
         }
 
         // 新規発行された token があれば settings に保存
@@ -280,13 +319,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
           addDebugLog('Bearer token を更新しました');
         }
 
-        // 結果を反映（URI解決された場合はURIも更新）
+        // 結果を反映（URI解決された場合はURIも更新、進捗はクリア）
         const updated = recordingsRef.current.map(r =>
           r.id === rec.id
             ? {
                 ...r,
                 uploadStatus: result.ok ? ('uploaded' as const) : ('failed' as const),
                 serverId: result.serverId ?? r.serverId,
+                uploadProgress: undefined,
                 ...(result.resolvedUri ? { uri: result.resolvedUri } : {}),
               }
             : r
@@ -297,6 +337,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       }
     } finally {
       uploadingRef.current = false;
+      if (notificationsEnabledRef.current) {
+        const pendingCount = recordingsRef.current.filter(
+          r => r.uploadStatus === 'waiting' || r.uploadStatus === 'failed'
+        ).length;
+        await setBadgeCount(pendingCount);
+      }
     }
   }, []);
 
@@ -381,6 +427,29 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(RECORDING_QUALITY_KEY, quality);
   }, []);
 
+  // 通知を有効化する際は OS の許可を取得。拒否された場合は false を返す。
+  const setNotificationsEnabled = useCallback(async (enabled: boolean): Promise<boolean> => {
+    if (enabled) {
+      const perm = await requestNotificationPermission();
+      if (perm !== 'granted') {
+        setNotificationsEnabledState(false);
+        notificationsEnabledRef.current = false;
+        await AsyncStorage.setItem(NOTIFICATIONS_ENABLED_KEY, 'false');
+        return false;
+      }
+      setNotificationsEnabledState(true);
+      notificationsEnabledRef.current = true;
+      await AsyncStorage.setItem(NOTIFICATIONS_ENABLED_KEY, 'true');
+      return true;
+    } else {
+      setNotificationsEnabledState(false);
+      notificationsEnabledRef.current = false;
+      await AsyncStorage.setItem(NOTIFICATIONS_ENABLED_KEY, 'false');
+      await setBadgeCount(0);
+      return true;
+    }
+  }, []);
+
   return (
     <AppContext.Provider
       value={{
@@ -390,6 +459,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         isDebugMode,
         debugLogs,
         recordingQuality,
+        notificationsEnabled,
         theme,
         updateSettings: updateSettingsHandler,
         addRecording,
@@ -402,6 +472,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         clearDebugLogs,
         addDebugLog,
         setRecordingQuality,
+        setNotificationsEnabled,
       }}
     >
       {children}

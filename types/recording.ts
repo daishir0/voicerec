@@ -11,6 +11,8 @@ export interface RecordingEntry {
   uploadStatus: UploadStatus;
   serverId?: string;
   createdAt: string;
+  /** アップロード中の進捗 (0.0〜1.0)。uploading 状態の時のみ意味を持つ。 */
+  uploadProgress?: number;
 }
 
 export interface ServerSettings {

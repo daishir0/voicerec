@@ -32,6 +32,10 @@ export function RecordingListItem({ recording, onEditName }: RecordingListItemPr
   const { theme, deleteRecording, retryUpload } = useApp();
   const isUploaded = recording.uploadStatus === 'uploaded';
   const isFailed = recording.uploadStatus === 'failed';
+  const isUploading = recording.uploadStatus === 'uploading';
+  const progress = typeof recording.uploadProgress === 'number'
+    ? Math.max(0, Math.min(1, recording.uploadProgress))
+    : 0;
 
   const handleDelete = () => {
     Alert.alert('削除確認', `「${recording.displayName}」を削除しますか？`, [
@@ -81,6 +85,11 @@ export function RecordingListItem({ recording, onEditName }: RecordingListItemPr
       </View>
       <View style={styles.statusRow}>
         <UploadStatusBadge status={recording.uploadStatus} />
+        {isUploading && (
+          <Text style={[styles.progressText, { color: theme.textSecondary }]}>
+            {Math.round(progress * 100)}%
+          </Text>
+        )}
         {isFailed && (
           <Pressable onPress={handleRetry} style={styles.retryButton} hitSlop={8}>
             <Ionicons name="refresh" size={14} color="#fff" />
@@ -88,6 +97,16 @@ export function RecordingListItem({ recording, onEditName }: RecordingListItemPr
           </Pressable>
         )}
       </View>
+      {isUploading && (
+        <View style={[styles.progressTrack, { backgroundColor: theme.bgTertiary }]}>
+          <View
+            style={[
+              styles.progressFill,
+              { width: `${progress * 100}%`, backgroundColor: theme.accent },
+            ]}
+          />
+        </View>
+      )}
     </View>
   );
 }
@@ -143,5 +162,18 @@ const styles = StyleSheet.create({
     color: '#fff',
     fontSize: 11,
     fontWeight: '600',
+  },
+  progressText: {
+    fontSize: 11,
+    fontWeight: '600',
+  },
+  progressTrack: {
+    height: 3,
+    borderRadius: 2,
+    marginTop: 6,
+    overflow: 'hidden',
+  },
+  progressFill: {
+    height: '100%',
   },
 });

@@ -2,8 +2,10 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { ServerSettings, RecordingEntry } from '@/types/recording';
 import { log } from './logger';
 
-const UPLOAD_TIMEOUT_MS = 30000;
+const UPLOAD_TIMEOUT_MS = 180000;
 const RECORDINGS_DIR = FileSystem.documentDirectory + 'recordings/';
+
+export type UploadProgressCallback = (progress: number) => void;
 
 /**
  * iOSのコンテナUUID変更に対応: 保存済みURIが無効な場合、
@@ -100,7 +102,8 @@ function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise
 
 export async function uploadRecording(
   settings: ServerSettings,
-  recording: RecordingEntry
+  recording: RecordingEntry,
+  onProgress?: UploadProgressCallback
 ): Promise<{ ok: boolean; serverId?: string; fileMissing?: boolean; resolvedUri?: string; newToken?: string }> {
   const { serverUrl, username, password } = settings;
 
@@ -137,45 +140,48 @@ export async function uploadRecording(
     return { ok: false, fileMissing: true };
   }
 
-  // Try FileSystem.uploadAsync first (foreground session)
+  // Try createUploadTask first (background session + progress callback)
   try {
-    await log(`Upload start (uploadAsync): ${recording.filename} → ${serverUrl}`);
-    const result = await withTimeout(
-      FileSystem.uploadAsync(
-        `${serverUrl}/api/recordings/upload`,
-        resolvedUri,
-        {
-          httpMethod: 'POST',
-          uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-          fieldName: 'file',
-          parameters: {
-            originalName: recording.filename,
-            displayName: recording.displayName,
-            duration: String(recording.duration),
-          },
-          headers: {
-            Authorization: authHeader,
-          },
-          sessionType: FileSystem.FileSystemSessionType.FOREGROUND,
+    await log(`Upload start (uploadTask): ${recording.filename} → ${serverUrl}`);
+    const task = FileSystem.createUploadTask(
+      `${serverUrl}/api/recordings/upload`,
+      resolvedUri,
+      {
+        httpMethod: 'POST',
+        uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+        fieldName: 'file',
+        parameters: {
+          originalName: recording.filename,
+          displayName: recording.displayName,
+          duration: String(recording.duration),
+        },
+        headers: {
+          Authorization: authHeader,
+        },
+        sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
+      },
+      (data) => {
+        if (onProgress && data.totalBytesExpectedToSend > 0) {
+          onProgress(data.totalBytesSent / data.totalBytesExpectedToSend);
         }
-      ),
-      UPLOAD_TIMEOUT_MS,
-      'uploadAsync'
+      }
     );
+    const result = await withTimeout(task.uploadAsync(), UPLOAD_TIMEOUT_MS, 'uploadTask');
+    if (!result) throw new Error('Upload task returned no result');
 
     if (result.status >= 200 && result.status < 300) {
       try {
         const data = JSON.parse(result.body);
-        await log(`Upload success (uploadAsync): ${recording.filename} serverId=${data.id}`);
+        await log(`Upload success (uploadTask): ${recording.filename} serverId=${data.id}`);
         return { ok: true, serverId: data.id, resolvedUri: resolved ? resolvedUri : undefined, newToken };
       } catch {
-        await log(`Upload success (uploadAsync): ${recording.filename} (no body parse)`);
+        await log(`Upload success (uploadTask): ${recording.filename} (no body parse)`);
         return { ok: true, resolvedUri: resolved ? resolvedUri : undefined, newToken };
       }
     }
-    await log(`Upload failed (uploadAsync): status=${result.status} body=${result.body}`);
+    await log(`Upload failed (uploadTask): status=${result.status} body=${result.body}`);
   } catch (err) {
-    await log(`uploadAsync error: ${err}, falling back to fetch`);
+    await log(`uploadTask error: ${err}, falling back to fetch`);
   }
 
   // Fallback: use fetch with FormData

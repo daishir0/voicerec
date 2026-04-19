@@ -10,6 +10,7 @@ import {
   ActivityIndicator,
   KeyboardAvoidingView,
   Platform,
+  Alert,
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
@@ -27,6 +28,8 @@ export default function SettingsScreen() {
     clearDebugLogs,
     recordingQuality,
     setRecordingQuality,
+    notificationsEnabled,
+    setNotificationsEnabled,
   } = useApp();
   const router = useRouter();
 
@@ -146,6 +149,33 @@ export default function SettingsScreen() {
             <Switch
               value={recordingQuality === 'high'}
               onValueChange={(v) => setRecordingQuality(v ? 'high' : 'standard')}
+              trackColor={{ false: theme.bgTertiary, true: theme.accent }}
+            />
+          </View>
+        </View>
+
+        {/* 通知セクション */}
+        <View style={[styles.debugSection, { borderTopColor: theme.border }]}>
+          <View style={styles.debugToggleRow}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={[styles.label, { color: theme.textSecondary, marginTop: 0 }]}>
+                通知を受け取る
+              </Text>
+              <Text style={[styles.qualityHint, { color: theme.textSecondary }]}>
+                バックグラウンドでアップロード完了/失敗時に通知します
+              </Text>
+            </View>
+            <Switch
+              value={notificationsEnabled}
+              onValueChange={async (v) => {
+                const ok = await setNotificationsEnabled(v);
+                if (v && !ok) {
+                  Alert.alert(
+                    '通知が許可されていません',
+                    'iPhoneの「設定」→「通知」→「rec18082」から通知を有効にしてください。',
+                  );
+                }
+              }}
               trackColor={{ false: theme.bgTertiary, true: theme.accent }}
             />
           </View>
