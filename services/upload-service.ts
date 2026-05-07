@@ -140,7 +140,12 @@ export async function uploadRecording(
     return { ok: false, fileMissing: true };
   }
 
-  // Try createUploadTask first (background session + progress callback)
+  // Try createUploadTask first (foreground session + progress callback)
+  // FOREGROUND を使う理由:
+  //   BACKGROUND 指定だと iOS の Background URLSession がスケジュールするため、
+  //   アプリがフォアグラウンドにあっても OS が転送速度を抑制する (7.4MB が 1 分超になる症状を確認)。
+  //   FOREGROUND は即時転送、ユーザーがアプリを開いている前提のアップロードに最適。
+  //   ※ アプリを閉じると転送が中断される。再開は次回起動時の uploadPending で再試行される。
   try {
     await log(`Upload start (uploadTask): ${recording.filename} → ${serverUrl}`);
     const task = FileSystem.createUploadTask(
@@ -158,7 +163,7 @@ export async function uploadRecording(
         headers: {
           Authorization: authHeader,
         },
-        sessionType: FileSystem.FileSystemSessionType.BACKGROUND,
+        sessionType: FileSystem.FileSystemSessionType.FOREGROUND,
       },
       (data) => {
         if (onProgress && data.totalBytesExpectedToSend > 0) {
