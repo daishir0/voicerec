@@ -149,55 +149,58 @@ export async function uploadRecording(
     return { ok: false, fileMissing: true };
   }
 
-  // FOREGROUND only: シンプルに fetch() で multipart アップロード
+  // FOREGROUND only: FileSystem.uploadAsync (MULTIPART) で iOS ネイティブの multipart 実装を使用
   //
   // 設計判断:
-  //   - createUploadTask は内部で iOS NSURLSession の挙動が不透明 (FOREGROUND 指定でも
-  //     失敗する事象を確認したため、純粋な fetch() のみに切り替え)
-  //   - 録音ファイルはローカルに永続化されているため、アプリがスリープして転送が
-  //     中断されても、次回起動時の uploadPending() で自動リトライされる
-  //   - ユーザーがアプリを開いている前提のアップロード = foreground のみ
-  //   - 進捗バイト単位は失われる (fetch には progress コールバックがない)
-  //     → UI 側は「Uploading...」の状態表示のみ
+  //   - RN の fetch() + FormData は iOS で multipart 最終 boundary が欠落する事象が再現
+  //     (Apache 側で AH02608 / "Final boundary missing" エラー → 400)
+  //   - FileSystem.uploadAsync(MULTIPART) は iOS NSURLSession のネイティブ multipart を使うため
+  //     boundary 問題が発生しない
+  //   - createUploadTask とは異なり同期 Promise で完了するため挙動が透明
+  //   - 録音ファイルはローカルに永続化されているため、転送中断時も次回起動時の
+  //     uploadPending() で自動リトライされる
   //
   // onProgress は呼び出し互換のため残置 (送信開始/完了時に 0 / 1 を1度ずつ通知)
   void onProgress;
 
   try {
-    await log(`[diag] +${ms()}ms upload start (fetch, FOREGROUND): ${recording.filename}`);
-    const formData = new FormData();
-    formData.append('file', {
-      uri: resolvedUri,
-      name: recording.filename,
-      type: recording.mimeType,
-    } as any);
-    formData.append('originalName', recording.filename);
-    formData.append('displayName', recording.displayName);
-    formData.append('duration', String(recording.duration));
+    await log(`[diag] +${ms()}ms upload start (uploadAsync, FOREGROUND): ${recording.filename}`);
 
     onProgress?.(0);
-    const response = await withTimeout(
-      fetch(`${serverUrl}/api/recordings/upload`, {
-        method: 'POST',
-        headers: { Authorization: authHeader },
-        body: formData,
-      }),
+    const result = await withTimeout(
+      FileSystem.uploadAsync(
+        `${serverUrl}/api/recordings/upload`,
+        resolvedUri,
+        {
+          httpMethod: 'POST',
+          uploadType: FileSystem.FileSystemUploadType.MULTIPART,
+          fieldName: 'file',
+          mimeType: recording.mimeType,
+          parameters: {
+            originalName: recording.filename,
+            displayName: recording.displayName,
+            duration: String(recording.duration),
+          },
+          headers: {
+            Authorization: authHeader,
+          },
+        }
+      ),
       UPLOAD_TIMEOUT_MS,
-      'fetch'
+      'uploadAsync'
     );
 
-    await log(`[diag] +${ms()}ms response received: status=${response.status} ok=${response.ok}`);
+    await log(`[diag] +${ms()}ms response received: status=${result.status}`);
 
-    if (response.ok) {
-      const data = await response.json();
+    if (result.status >= 200 && result.status < 300) {
+      const data = JSON.parse(result.body);
       onProgress?.(1);
       await log(`[diag] +${ms()}ms upload SUCCESS: ${recording.filename} serverId=${data.id}`);
       return { ok: true, serverId: data.id, resolvedUri: resolved ? resolvedUri : undefined, newToken };
     }
-    const errBody = await response.text().catch(() => '');
-    await log(`[diag] +${ms()}ms upload FAILED: status=${response.status} body=${errBody.slice(0, 300)}`);
+    await log(`[diag] +${ms()}ms upload FAILED: status=${result.status} body=${result.body.slice(0, 300)}`);
   } catch (err) {
-    await log(`[diag] +${ms()}ms fetch error: ${err}`);
+    await log(`[diag] +${ms()}ms uploadAsync error: ${err}`);
   }
 
   await log(`[diag] +${ms()}ms upload abandoned`);
