@@ -14,6 +14,7 @@ import {
 } from 'react-native';
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
+import * as Clipboard from 'expo-clipboard';
 import { useApp } from '@/contexts/AppContext';
 import { testConnection } from '@/services/upload-service';
 
@@ -197,9 +198,24 @@ export default function SettingsScreen() {
           <View style={styles.debugLogSection}>
             <View style={styles.debugLogHeader}>
               <Text style={[styles.label, { color: theme.textSecondary, marginTop: 0 }]}>デバッグログ</Text>
-              <Pressable onPress={clearDebugLogs}>
-                <Text style={{ color: theme.accent, fontSize: 13 }}>クリア</Text>
-              </Pressable>
+              <View style={{ flexDirection: 'row', gap: 12 }}>
+                <Pressable
+                  onPress={async () => {
+                    if (debugLogs.length === 0) {
+                      Alert.alert('ログなし', 'コピーするログがありません。');
+                      return;
+                    }
+                    const text = debugLogs.join('\n');
+                    await Clipboard.setStringAsync(text);
+                    Alert.alert('コピー完了', `${debugLogs.length} 行のログをクリップボードにコピーしました。`);
+                  }}
+                >
+                  <Text style={{ color: theme.accent, fontSize: 13 }}>コピー</Text>
+                </Pressable>
+                <Pressable onPress={clearDebugLogs}>
+                  <Text style={{ color: theme.accent, fontSize: 13 }}>クリア</Text>
+                </Pressable>
+              </View>
             </View>
             <View style={[styles.debugLogBox, { backgroundColor: theme.bgSecondary, borderColor: theme.border }]}>
               {debugLogs.length === 0 ? (

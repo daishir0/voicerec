@@ -14,9 +14,30 @@ function timestamp(): string {
   return new Date().toISOString().replace('T', ' ').replace('Z', '');
 }
 
+// UI のデバッグログ表示と橋渡しするためのリスナ
+type LogListener = (message: string) => void;
+const listeners: LogListener[] = [];
+
+export function registerLogListener(fn: LogListener): () => void {
+  listeners.push(fn);
+  return () => {
+    const i = listeners.indexOf(fn);
+    if (i >= 0) listeners.splice(i, 1);
+  };
+}
+
 export async function log(message: string): Promise<void> {
   const line = `[${timestamp()}] ${message}\n`;
   console.log(message);
+
+  // UI 側のリスナへも通知 (例: AppContext の addDebugLog)
+  for (const fn of listeners) {
+    try {
+      fn(message);
+    } catch {
+      /* ignore listener error */
+    }
+  }
 
   try {
     const dirInfo = await FileSystem.getInfoAsync(LOG_DIR);

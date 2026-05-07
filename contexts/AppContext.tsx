@@ -4,7 +4,7 @@ import * as FileSystem from 'expo-file-system/legacy';
 import { ServerSettings, RecordingEntry } from '@/types/recording';
 import { loadSettings, saveSettings, loadRecordings, saveRecordings } from '@/services/storage-service';
 import { uploadRecording } from '@/services/upload-service';
-import { log } from '@/services/logger';
+import { log, registerLogListener } from '@/services/logger';
 import type { RecordingQuality } from '@/services/audio-recorder';
 import {
   getPermissionStatus as getNotificationPermissionStatus,
@@ -90,13 +90,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const notificationsEnabledRef = useRef(notificationsEnabled);
   notificationsEnabledRef.current = notificationsEnabled;
 
-  // デバッグログ追加（最新50件を保持）
+  // デバッグログ追加（最新200件を保持）
+  // 診断用 progress callback が 1 秒間隔で多数のログを出すため上限を拡張
   const addDebugLog = useCallback((message: string) => {
     const ts = new Date().toLocaleTimeString('ja-JP');
     const line = `[${ts}] ${message}`;
     console.log(`[DEBUG] ${message}`);
-    setDebugLogs(prev => [line, ...prev].slice(0, 50));
+    setDebugLogs(prev => [line, ...prev].slice(0, 200));
   }, []);
+
+  // logger.ts (services/logger.ts) の log() 出力を UI のデバッグログにも橋渡し
+  // upload-service.ts などからの diag ログがそのまま表示される
+  useEffect(() => {
+    const unregister = registerLogListener((msg) => addDebugLog(msg));
+    return () => unregister();
+  }, [addDebugLog]);
 
   useEffect(() => {
     (async () => {

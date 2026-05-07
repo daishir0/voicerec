@@ -106,92 +106,65 @@ export async function uploadRecording(
   onProgress?: UploadProgressCallback
 ): Promise<{ ok: boolean; serverId?: string; fileMissing?: boolean; resolvedUri?: string; newToken?: string }> {
   const { serverUrl, username, password } = settings;
+  const t0 = Date.now();
+  const ms = () => Date.now() - t0;
+
+  await log(`[diag] upload begin: ${recording.filename} (${recording.fileSize}B, ${recording.duration}ms)`);
+  await log(`[diag] target: ${serverUrl}`);
 
   // Bearer token を取得 (既存 or 新規ログイン)
   let token = settings.token ?? null;
   let newToken: string | undefined;
   if (!token) {
+    await log(`[diag] +${ms()}ms login start (no token)`);
     const login = await loginAndGetToken(serverUrl, username, password);
     if (!login) {
-      await log('Upload abort: login failed');
+      await log(`[diag] +${ms()}ms upload abort: login failed`);
       return { ok: false };
     }
     token = login.token;
     newToken = login.token;
+    await log(`[diag] +${ms()}ms login ok`);
+  } else {
+    await log(`[diag] +${ms()}ms using existing token`);
   }
   const authHeader = `Bearer ${token}`;
 
   // ファイル存在チェック（iOSコンテナUUID変更に対応）
+  await log(`[diag] +${ms()}ms resolving uri: ${recording.uri}`);
   const { uri: resolvedUri, resolved } = await resolveRecordingUri(recording.uri);
   if (resolved) {
-    // URI が解決された場合、呼び出し元に通知するためにrecordingを更新
     recording = { ...recording, uri: resolvedUri };
   }
 
   try {
     const fileInfo = await FileSystem.getInfoAsync(resolvedUri);
     if (!fileInfo.exists) {
-      await log(`Upload skip: file not found: ${recording.uri} (resolved=${resolvedUri})`);
+      await log(`[diag] +${ms()}ms file not found: ${recording.uri} (resolved=${resolvedUri})`);
       return { ok: false, fileMissing: true };
     }
-    await log(`Upload: file confirmed at ${resolvedUri} (resolved=${resolved})`);
+    await log(`[diag] +${ms()}ms file confirmed: ${resolvedUri} (size=${fileInfo.size ?? 'unknown'})`);
   } catch (err) {
-    await log(`Upload skip: file check error: ${resolvedUri} ${err}`);
+    await log(`[diag] +${ms()}ms file check error: ${resolvedUri} ${err}`);
     return { ok: false, fileMissing: true };
   }
 
-  // Try createUploadTask first (foreground session + progress callback)
-  // FOREGROUND を使う理由:
-  //   BACKGROUND 指定だと iOS の Background URLSession がスケジュールするため、
-  //   アプリがフォアグラウンドにあっても OS が転送速度を抑制する (7.4MB が 1 分超になる症状を確認)。
-  //   FOREGROUND は即時転送、ユーザーがアプリを開いている前提のアップロードに最適。
-  //   ※ アプリを閉じると転送が中断される。再開は次回起動時の uploadPending で再試行される。
-  try {
-    await log(`Upload start (uploadTask): ${recording.filename} → ${serverUrl}`);
-    const task = FileSystem.createUploadTask(
-      `${serverUrl}/api/recordings/upload`,
-      resolvedUri,
-      {
-        httpMethod: 'POST',
-        uploadType: FileSystem.FileSystemUploadType.MULTIPART,
-        fieldName: 'file',
-        parameters: {
-          originalName: recording.filename,
-          displayName: recording.displayName,
-          duration: String(recording.duration),
-        },
-        headers: {
-          Authorization: authHeader,
-        },
-        sessionType: FileSystem.FileSystemSessionType.FOREGROUND,
-      },
-      (data) => {
-        if (onProgress && data.totalBytesExpectedToSend > 0) {
-          onProgress(data.totalBytesSent / data.totalBytesExpectedToSend);
-        }
-      }
-    );
-    const result = await withTimeout(task.uploadAsync(), UPLOAD_TIMEOUT_MS, 'uploadTask');
-    if (!result) throw new Error('Upload task returned no result');
+  // FOREGROUND only: シンプルに fetch() で multipart アップロード
+  //
+  // 設計判断:
+  //   - createUploadTask は内部で iOS NSURLSession の挙動が不透明 (FOREGROUND 指定でも
+  //     失敗する事象を確認したため、純粋な fetch() のみに切り替え)
+  //   - 録音ファイルはローカルに永続化されているため、アプリがスリープして転送が
+  //     中断されても、次回起動時の uploadPending() で自動リトライされる
+  //   - ユーザーがアプリを開いている前提のアップロード = foreground のみ
+  //   - 進捗バイト単位は失われる (fetch には progress コールバックがない)
+  //     → UI 側は「Uploading...」の状態表示のみ
+  //
+  // onProgress は呼び出し互換のため残置 (送信開始/完了時に 0 / 1 を1度ずつ通知)
+  void onProgress;
 
-    if (result.status >= 200 && result.status < 300) {
-      try {
-        const data = JSON.parse(result.body);
-        await log(`Upload success (uploadTask): ${recording.filename} serverId=${data.id}`);
-        return { ok: true, serverId: data.id, resolvedUri: resolved ? resolvedUri : undefined, newToken };
-      } catch {
-        await log(`Upload success (uploadTask): ${recording.filename} (no body parse)`);
-        return { ok: true, resolvedUri: resolved ? resolvedUri : undefined, newToken };
-      }
-    }
-    await log(`Upload failed (uploadTask): status=${result.status} body=${result.body}`);
-  } catch (err) {
-    await log(`uploadTask error: ${err}, falling back to fetch`);
-  }
-
-  // Fallback: use fetch with FormData
   try {
-    await log(`Upload start (fetch fallback): ${recording.filename}`);
+    await log(`[diag] +${ms()}ms upload start (fetch, FOREGROUND): ${recording.filename}`);
     const formData = new FormData();
     formData.append('file', {
       uri: resolvedUri,
@@ -202,6 +175,7 @@ export async function uploadRecording(
     formData.append('displayName', recording.displayName);
     formData.append('duration', String(recording.duration));
 
+    onProgress?.(0);
     const response = await withTimeout(
       fetch(`${serverUrl}/api/recordings/upload`, {
         method: 'POST',
@@ -212,15 +186,20 @@ export async function uploadRecording(
       'fetch'
     );
 
+    await log(`[diag] +${ms()}ms response received: status=${response.status} ok=${response.ok}`);
+
     if (response.ok) {
       const data = await response.json();
-      await log(`Upload success (fetch): ${recording.filename} serverId=${data.id}`);
+      onProgress?.(1);
+      await log(`[diag] +${ms()}ms upload SUCCESS: ${recording.filename} serverId=${data.id}`);
       return { ok: true, serverId: data.id, resolvedUri: resolved ? resolvedUri : undefined, newToken };
     }
-    await log(`Upload failed (fetch): status=${response.status}`);
+    const errBody = await response.text().catch(() => '');
+    await log(`[diag] +${ms()}ms upload FAILED: status=${response.status} body=${errBody.slice(0, 300)}`);
   } catch (err) {
-    await log(`Upload fetch error: ${err}`);
+    await log(`[diag] +${ms()}ms fetch error: ${err}`);
   }
 
+  await log(`[diag] +${ms()}ms upload abandoned`);
   return { ok: false };
 }
