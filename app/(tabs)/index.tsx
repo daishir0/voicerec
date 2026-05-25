@@ -68,9 +68,9 @@ export default function RecordScreen() {
 
   const primaryPreset = getPresetForQuality(recordingQuality);
   const recorder = useAudioRecorder(primaryPreset);
-  const recorderState = useAudioRecorderState(recorder, 500);
+  const recorderState = useAudioRecorderState(recorder, 100);
   const fallbackRecorder = useAudioRecorder(FALLBACK_PRESET);
-  const fallbackState = useAudioRecorderState(fallbackRecorder, 500);
+  const fallbackState = useAudioRecorderState(fallbackRecorder, 100);
 
   const activeState = useFallback ? fallbackState : recorderState;
   const elapsedSeconds = Math.floor((activeState.durationMillis || 0) / 1000);
@@ -215,7 +215,7 @@ export default function RecordScreen() {
           {isRecording ? '録音中...' : 'タップして録音開始'}
         </Text>
       </View>
-      <RecordButton isRecording={isRecording} onPress={handlePress} />
+      <RecordButton isRecording={isRecording} onPress={handlePress} metering={activeState.metering} />
     </View>
   );
 }

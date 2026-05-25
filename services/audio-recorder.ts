@@ -7,6 +7,7 @@ import type { RecordingOptions } from 'expo-audio';
 
 export const WHISPER_PRESET: RecordingOptions = {
   extension: '.m4a',
+  isMeteringEnabled: true,
   sampleRate: 12000,
   numberOfChannels: 1,
   bitRate: 16000,
@@ -31,6 +32,7 @@ export const WHISPER_PRESET: RecordingOptions = {
 // 16kHz / mono / 32kbps AAC — 通常(12kHz/16kbps)の約2倍(~240KB/分)
 export const WHISPER_HIGH_QUALITY_PRESET: RecordingOptions = {
   extension: '.m4a',
+  isMeteringEnabled: true,
   sampleRate: 16000,
   numberOfChannels: 1,
   bitRate: 32000,
