@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "jp.path-finder.voicerec",
-      "buildNumber": "12",
+      "buildNumber": "23",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "録音機能を使用するためにマイクへのアクセスが必要です",
         "UIBackgroundModes": [
@@ -43,7 +43,9 @@
     },
     "plugins": [
       "expo-router",
-      "expo-notifications"
+      "expo-notifications",
+      "expo-font",
+      "expo-asset"
     ],
     "experiments": {
       "typedRoutes": true
