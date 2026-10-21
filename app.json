@@ -16,7 +16,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "jp.path-finder.voicerec",
-      "buildNumber": "25",
+      "buildNumber": "26",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "録音機能を使用するためにマイクへのアクセスが必要です",
         "UIBackgroundModes": [
@@ -25,7 +25,8 @@
         "ITSAppUsesNonExemptEncryption": false,
         "UIFileSharingEnabled": true,
         "LSSupportsOpeningDocumentsInPlace": true,
-        "NSSpeechRecognitionUsageDescription": "録音した音声を端末内で文字起こしするために使用します"
+        "NSSpeechRecognitionUsageDescription": "録音した音声を端末内で文字起こしするために使用します",
+        "NSPhotoLibraryUsageDescription": "このアプリは写真ライブラリを使いません（同梱しているライブラリが写真の API を参照しているため、Apple の要件として記載しています）。"
       }
     },
     "android": {

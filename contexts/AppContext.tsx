@@ -7,6 +7,12 @@ import { uploadRecording } from '@/services/upload-service';
 import { log, registerLogListener } from '@/services/logger';
 import type { RecordingQuality } from '@/services/audio-recorder';
 import {
+  applyRetention,
+  DEFAULT_RETENTION_DAYS,
+  RETENTION_CHOICES,
+  type RetentionDays,
+} from '@/services/retention';
+import {
   getPermissionStatus as getNotificationPermissionStatus,
   requestPermission as requestNotificationPermission,
   notifyUploadSuccess,
@@ -19,6 +25,8 @@ const DARK_MODE_KEY = 'rec18082_darkMode';
 const DEBUG_MODE_KEY = 'rec18082_debugMode';
 const RECORDING_QUALITY_KEY = 'rec18082_recordingQuality';
 const NOTIFICATIONS_ENABLED_KEY = 'rec18082_notificationsEnabled';
+const RETENTION_DAYS_KEY = 'rec18082_retentionDays';
+const KEEP_UNUPLOADED_KEY = 'rec18082_keepUnuploaded';
 const RECORDINGS_DIR = FileSystem.documentDirectory + 'recordings/';
 
 interface Theme {
@@ -40,6 +48,10 @@ interface AppContextType {
   debugLogs: string[];
   recordingQuality: RecordingQuality;
   notificationsEnabled: boolean;
+  /** 何日より古い録音を自動削除するか。0 は削除しない */
+  retentionDays: RetentionDays;
+  /** 未アップロードのものを自動削除から守るか */
+  keepUnuploaded: boolean;
   theme: Theme;
   updateSettings: (settings: ServerSettings) => Promise<void>;
   addRecording: (recording: RecordingEntry) => Promise<void>;
@@ -53,6 +65,12 @@ interface AppContextType {
   addDebugLog: (message: string) => void;
   setRecordingQuality: (quality: RecordingQuality) => void;
   setNotificationsEnabled: (enabled: boolean) => Promise<boolean>;
+  setRetentionDays: (days: RetentionDays) => void;
+  setKeepUnuploaded: (keep: boolean) => void;
+  /** ★ を付け外しする。★ の付いた録音は自動削除されない */
+  toggleProtected: (id: string) => Promise<void>;
+  /** いますぐ自動削除を走らせる */
+  runRetention: () => Promise<void>;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -76,6 +94,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [debugLogs, setDebugLogs] = useState<string[]>([]);
   const [recordingQuality, setRecordingQualityState] = useState<RecordingQuality>('standard');
   const [notificationsEnabled, setNotificationsEnabledState] = useState(false);
+  const [retentionDays, setRetentionDaysState] = useState<RetentionDays>(DEFAULT_RETENTION_DAYS);
+  const [keepUnuploaded, setKeepUnuploadedState] = useState(true);
   const [loaded, setLoaded] = useState(false);
 
   // Refs で常に最新の値を参照できるようにする
@@ -89,6 +109,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   debugModeRef.current = isDebugMode;
   const notificationsEnabledRef = useRef(notificationsEnabled);
   notificationsEnabledRef.current = notificationsEnabled;
+  const retentionRef = useRef({ days: retentionDays, keepUnuploaded });
+  retentionRef.current = { days: retentionDays, keepUnuploaded };
 
   // デバッグログ追加（最新200件を保持）
   // 診断用 progress callback が 1 秒間隔で多数のログを出すため上限を拡張
@@ -108,14 +130,26 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
   useEffect(() => {
     (async () => {
-      const [savedSettings, savedRecordings, savedDark, savedDebug, savedQuality, savedNotify] = await Promise.all([
+      const [savedSettings, savedRecordings, savedDark, savedDebug, savedQuality, savedNotify,
+             savedRetention, savedKeepUnuploaded] = await Promise.all([
         loadSettings(),
         loadRecordings(),
         AsyncStorage.getItem(DARK_MODE_KEY),
         AsyncStorage.getItem(DEBUG_MODE_KEY),
         AsyncStorage.getItem(RECORDING_QUALITY_KEY),
         AsyncStorage.getItem(NOTIFICATIONS_ENABLED_KEY),
+        AsyncStorage.getItem(RETENTION_DAYS_KEY),
+        AsyncStorage.getItem(KEEP_UNUPLOADED_KEY),
       ]);
+      const days = Number(savedRetention);
+      if ((RETENTION_CHOICES as readonly number[]).includes(days)) {
+        setRetentionDaysState(days as RetentionDays);
+        retentionRef.current.days = days as RetentionDays;
+      }
+      if (savedKeepUnuploaded === 'false') {
+        setKeepUnuploadedState(false);
+        retentionRef.current.keepUnuploaded = false;
+      }
       if (savedSettings) setSettings(savedSettings);
       if (savedDebug !== null) setIsDebugMode(savedDebug === 'true');
       if (savedDark !== null) setIsDarkMode(savedDark === 'true');
@@ -141,10 +175,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     })();
   }, []);
 
-  // Cleanup old uploaded recordings (24h+), reset stale uploads, and auto-upload on mount
+  // 起動時: 古い録音の自動削除 → 中断アップロードのリセット → 再送信
   useEffect(() => {
     if (loaded) {
-      cleanupOldRecordings()
+      runRetention()
         .then(() => resetStaleUploads())
         .then(() => doUploadPending());
     }
@@ -192,37 +226,23 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   // Retry failed uploads when app returns to foreground
   const doUploadRef = useRef<() => Promise<void>>(undefined);
 
-  const cleanupOldRecordings = useCallback(async () => {
-    const now = Date.now();
-    const TWENTY_FOUR_HOURS = 24 * 60 * 60 * 1000;
-    const current = recordingsRef.current;
-
-    const toDelete = current.filter(
-      r => r.uploadStatus === 'uploaded' && now - new Date(r.createdAt).getTime() > TWENTY_FOUR_HOURS
+  /**
+   * 保持日数より古い録音を消す。起動時・前面復帰時・録音停止時に走る。
+   * 「容量を気にせず録りっぱなしにできる」ためには、放っておいても減ることが要る。
+   */
+  const runRetention = useCallback(async () => {
+    const { days, keepUnuploaded: keep } = retentionRef.current;
+    if (!days) return;
+    const { kept, result } = await applyRetention(
+      recordingsRef.current,
+      { days, keepUnuploaded: keep },
+      (msg) => { addDebugLog(msg); void log(msg); },
     );
-
-    if (toDelete.length === 0) return;
-
-    // 物理ファイル削除
-    for (const rec of toDelete) {
-      try {
-        const info = await FileSystem.getInfoAsync(rec.uri);
-        if (info.exists) {
-          await FileSystem.deleteAsync(rec.uri, { idempotent: true });
-        }
-      } catch (e) {
-        console.warn(`cleanup: ファイル削除失敗 ${rec.uri}`, e);
-      }
-    }
-
-    // リストから除外して保存
-    const deleteIds = new Set(toDelete.map(r => r.id));
-    const next = current.filter(r => !deleteIds.has(r.id));
-    recordingsRef.current = next;
-    setRecordings(next);
-    await saveRecordings(next);
-    console.log(`cleanup: ${toDelete.length}件の古い録音を削除しました`);
-  }, []);
+    if (result.deleted.length === 0) return;
+    recordingsRef.current = kept;
+    setRecordings(kept);
+    await saveRecordings(kept);
+  }, [addDebugLog]);
 
   const theme: Theme = {
     bg: isDarkMode ? '#000' : '#fff',
@@ -378,11 +398,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const sub = AppState.addEventListener('change', (nextState) => {
       if (nextState === 'active' && loaded) {
-        resetStaleUploads().then(() => doUploadRef.current?.());
+        runRetention()
+          .then(() => resetStaleUploads())
+          .then(() => doUploadRef.current?.());
       }
     });
     return () => sub.remove();
-  }, [loaded, resetStaleUploads]);
+  }, [loaded, resetStaleUploads, runRetention]);
 
   // uploadPending は常に最新のref値を使うので依存配列空でOK
   // タイマーをキャンセル可能にして重複トリガーを防止
@@ -435,6 +457,27 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(RECORDING_QUALITY_KEY, quality);
   }, []);
 
+  const setRetentionDays = useCallback((days: RetentionDays) => {
+    setRetentionDaysState(days);
+    retentionRef.current.days = days;
+    AsyncStorage.setItem(RETENTION_DAYS_KEY, String(days));
+  }, []);
+
+  const setKeepUnuploaded = useCallback((keep: boolean) => {
+    setKeepUnuploadedState(keep);
+    retentionRef.current.keepUnuploaded = keep;
+    AsyncStorage.setItem(KEEP_UNUPLOADED_KEY, String(keep));
+  }, []);
+
+  const toggleProtected = useCallback(async (id: string) => {
+    const next = recordingsRef.current.map(r =>
+      r.id === id ? { ...r, protected: !r.protected } : r
+    );
+    recordingsRef.current = next;
+    setRecordings(next);
+    await saveRecordings(next);
+  }, []);
+
   // 通知を有効化する際は OS の許可を取得。拒否された場合は false を返す。
   const setNotificationsEnabled = useCallback(async (enabled: boolean): Promise<boolean> => {
     if (enabled) {
@@ -468,6 +511,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         debugLogs,
         recordingQuality,
         notificationsEnabled,
+        retentionDays,
+        keepUnuploaded,
         theme,
         updateSettings: updateSettingsHandler,
         addRecording,
@@ -481,6 +526,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         addDebugLog,
         setRecordingQuality,
         setNotificationsEnabled,
+        setRetentionDays,
+        setKeepUnuploaded,
+        toggleProtected,
+        runRetention,
       }}
     >
       {children}

@@ -17,6 +17,13 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { useApp } from '@/contexts/AppContext';
 import { testConnection } from '@/services/upload-service';
+import {
+  formatBytes,
+  retentionLabel,
+  RETENTION_CHOICES,
+  totalBytes,
+  type RetentionDays,
+} from '@/services/retention';
 
 export default function SettingsScreen() {
   const {
@@ -31,6 +38,11 @@ export default function SettingsScreen() {
     setRecordingQuality,
     notificationsEnabled,
     setNotificationsEnabled,
+    recordings,
+    retentionDays,
+    setRetentionDays,
+    keepUnuploaded,
+    setKeepUnuploaded,
   } = useApp();
   const router = useRouter();
 
@@ -182,6 +194,53 @@ export default function SettingsScreen() {
           </View>
         </View>
 
+        {/* 保存期間セクション */}
+        <View style={[styles.debugSection, { borderTopColor: theme.border }]}>
+          <View style={{ paddingRight: 12 }}>
+            <Text style={[styles.label, { color: theme.textSecondary, marginTop: 0 }]}>
+              古い録音の自動削除
+            </Text>
+            <Text style={[styles.qualityHint, { color: theme.textSecondary }]}>
+              起動したときに、これより古い録音を消します。{'\n'}
+              いま端末にあるのは {recordings.length}件 / {formatBytes(totalBytes(recordings))}
+            </Text>
+          </View>
+          <View style={styles.retentionRow}>
+            {RETENTION_CHOICES.map((d) => {
+              const on = retentionDays === d;
+              return (
+                <Pressable
+                  key={d}
+                  onPress={() => setRetentionDays(d as RetentionDays)}
+                  style={[styles.retentionChip, {
+                    backgroundColor: on ? theme.accent : theme.bgSecondary,
+                    borderColor: on ? theme.accent : theme.border,
+                  }]}
+                >
+                  <Text style={{ color: on ? '#fff' : theme.text, fontSize: 13 }}>
+                    {retentionLabel(d as RetentionDays)}
+                  </Text>
+                </Pressable>
+              );
+            })}
+          </View>
+          <View style={styles.debugToggleRow}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={[styles.label, { color: theme.textSecondary, marginTop: 0 }]}>
+                未送信のものは消さない
+              </Text>
+              <Text style={[styles.qualityHint, { color: theme.textSecondary }]}>
+                サーバーへ送れていない録音を自動削除から守ります
+              </Text>
+            </View>
+            <Switch
+              value={keepUnuploaded}
+              onValueChange={setKeepUnuploaded}
+              trackColor={{ false: theme.bgTertiary, true: theme.accent }}
+            />
+          </View>
+        </View>
+
         {/* デバッグセクション */}
         <View style={[styles.debugSection, { borderTopColor: theme.border }]}>
           <View style={styles.debugToggleRow}>
@@ -247,6 +306,19 @@ export default function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
+  retentionRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: 8,
+    marginTop: 12,
+    marginBottom: 4,
+  },
+  retentionChip: {
+    paddingHorizontal: 14,
+    paddingVertical: 8,
+    borderRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth,
+  },
   diagRow: {
     flexDirection: 'row',
     alignItems: 'center',
