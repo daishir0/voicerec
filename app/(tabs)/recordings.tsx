@@ -2,10 +2,11 @@ import React, { useState } from 'react';
 import { View, Text, FlatList, StyleSheet, Alert, Pressable, Linking, ActivityIndicator } from 'react-native';
 import { useApp } from '@/contexts/AppContext';
 import { RecordingListItem } from '@/components/RecordingListItem';
+import { formatBytes, retentionLabel, totalBytes } from '@/services/retention';
 import { loginAndGetToken } from '@/services/upload-service';
 
 export default function RecordingsScreen() {
-  const { theme, recordings, updateRecording, settings } = useApp();
+  const { theme, recordings, updateRecording, settings, retentionDays } = useApp();
   const [openingServer, setOpeningServer] = useState(false);
 
   const handleEditName = (id: string, currentName: string) => {
@@ -88,6 +89,15 @@ export default function RecordingsScreen() {
 
   return (
     <View style={[styles.container, { backgroundColor: theme.bg }]}>
+      {/* 何件たまっていて、いつ消えるのかが一覧で分かるようにする */}
+      <View style={[styles.summary, { borderBottomColor: theme.border }]}>
+        <Text style={[styles.summaryText, { color: theme.textSecondary }]}>
+          {recordings.length}件 ・ {formatBytes(totalBytes(recordings))}
+        </Text>
+        <Text style={[styles.summaryText, { color: theme.textSecondary }]}>
+          {retentionDays ? `${retentionLabel(retentionDays)}より古い録音は自動で削除` : '自動削除しない設定です'}
+        </Text>
+      </View>
       <FlatList
         data={recordings}
         keyExtractor={(item) => item.id}
@@ -102,6 +112,15 @@ export default function RecordingsScreen() {
 }
 
 const styles = StyleSheet.create({
+  summary: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingHorizontal: 16,
+    paddingVertical: 10,
+    borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  summaryText: { fontSize: 12 },
   container: {
     flex: 1,
   },

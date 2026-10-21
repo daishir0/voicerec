@@ -52,7 +52,7 @@ function stamp(d: Date): string {
 
 export default function ClipScreen() {
   const {
-    theme, recordings, addRecording, deleteRecording, toggleProtected, uploadPending,
+    theme, recordings, addRecording, updateRecording, deleteRecording, toggleProtected, uploadPending,
     recordingQuality, transcribeLocale, activeRecorder, setActiveRecorder, addDebugLog,
     runRetention, coexistWithOtherApps, recordingAudioMode,
   } = useApp();
@@ -173,11 +173,17 @@ export default function ClipScreen() {
       if (!alive) return;
       setLevels(lv);
       const total = source.duration / 1000;
-      setRange({ startSec: Math.max(0, total - 300), endSec: total });
-      setTranscript(null);
+      const saved = source.transcript;
+      if (saved) {
+        setRange({ startSec: saved.startSec, endSec: saved.endSec });
+        setTranscript({ text: saved.text, engine: saved.engine, ms: 0 });
+      } else {
+        setRange({ startSec: Math.max(0, total - 300), endSec: total });
+        setTranscript(null);
+      }
     })();
     return () => { alive = false; };
-  }, [source?.id, source?.levelsUri, source?.duration]);
+  }, [source?.id, source?.levelsUri, source?.duration, source?.transcript]);
 
   const stopPlay = useCallback(() => {
     stopAtRef.current = null;
@@ -401,13 +407,24 @@ export default function ClipScreen() {
     try {
       const r = await transcribeRange(source, range, transcribeLocale);
       setTranscript({ text: r.text, engine: r.engine, ms: r.elapsedMs });
-      if (!r.text) Alert.alert('文字起こし', '音声から文字を取り出せませんでした。');
+      if (r.text) {
+        // 画面を離れても残るように録音に持たせる
+        await updateRecording(source.id, {
+          transcript: {
+            text: r.text, engine: r.engine,
+            startSec: range.startSec, endSec: range.endSec,
+            at: new Date().toISOString(),
+          },
+        });
+      } else {
+        Alert.alert('文字起こし', '音声から文字を取り出せませんでした。');
+      }
     } catch (e: any) {
       Alert.alert('文字起こしに失敗しました', e?.message ?? String(e));
     } finally {
       setBusy(null);
     }
-  }, [source, range, transcribeLocale]);
+  }, [source, range, transcribeLocale, updateRecording]);
 
   const doUpload = useCallback(async () => {
     if (!source) return;
@@ -584,8 +601,7 @@ export default function ClipScreen() {
             <View style={[styles.card, { backgroundColor: theme.bgSecondary, borderColor: theme.border }]}>
               <View style={styles.transcriptHeader}>
                 <Text style={[styles.cardTitle, { color: theme.textSecondary }]}>
-                  文字起こし（{transcript.engine === 'analyzer' ? '端末内・長文対応' : '端末内'} /
-                  {' '}{(transcript.ms / 1000).toFixed(1)}秒）
+                  文字起こし（端末内{transcript.ms > 0 ? ` / ${(transcript.ms / 1000).toFixed(1)}秒` : ''}）
                 </Text>
                 <Pressable
                   onPress={async () => {

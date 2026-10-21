@@ -48,6 +48,8 @@ export default function SettingsScreen() {
     setTranscribeLocale,
     coexistWithOtherApps,
     setCoexistWithOtherApps,
+    startTab,
+    setStartTab,
   } = useApp();
   const router = useRouter();
 
@@ -196,6 +198,33 @@ export default function SettingsScreen() {
               }}
               trackColor={{ false: theme.bgTertiary, true: theme.accent }}
             />
+          </View>
+        </View>
+
+        {/* 起動時に開くタブ */}
+        <View style={[styles.debugSection, { borderTopColor: theme.border }]}>
+          <View style={{ paddingRight: 12 }}>
+            <Text style={[styles.label, { color: theme.textSecondary, marginTop: 0 }]}>
+              起動したときに開くタブ
+            </Text>
+          </View>
+          <View style={styles.retentionRow}>
+            {([['index', '録音'], ['clip', '切り出し'], ['recordings', '録音一覧']] as const).map(
+              ([id, label]) => {
+                const on = startTab === id;
+                return (
+                  <Pressable
+                    key={id}
+                    onPress={() => setStartTab(id)}
+                    style={[styles.retentionChip, {
+                      backgroundColor: on ? theme.accent : theme.bgSecondary,
+                      borderColor: on ? theme.accent : theme.border,
+                    }]}
+                  >
+                    <Text style={{ color: on ? '#fff' : theme.text, fontSize: 13 }}>{label}</Text>
+                  </Pressable>
+                );
+              })}
           </View>
         </View>
 

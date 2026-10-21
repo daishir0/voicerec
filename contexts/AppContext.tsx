@@ -30,6 +30,7 @@ const RETENTION_DAYS_KEY = 'rec18082_retentionDays';
 const KEEP_UNUPLOADED_KEY = 'rec18082_keepUnuploaded';
 const TRANSCRIBE_LOCALE_KEY = 'rec18082_transcribeLocale';
 const COEXIST_KEY = 'rec18082_coexistWithOtherApps';
+const START_TAB_KEY = 'rec18082_startTab';
 const RECORDINGS_DIR = FileSystem.documentDirectory + 'recordings/';
 
 interface Theme {
@@ -72,6 +73,8 @@ interface AppContextType {
   };
   /** いまどちらのタブが録音しているか。録音機は1つしか動かせない */
   activeRecorder: 'quick' | 'long' | null;
+  /** 起動したときに開くタブ */
+  startTab: 'index' | 'clip' | 'recordings';
   theme: Theme;
   updateSettings: (settings: ServerSettings) => Promise<void>;
   addRecording: (recording: RecordingEntry) => Promise<void>;
@@ -88,6 +91,7 @@ interface AppContextType {
   setRetentionDays: (days: RetentionDays) => void;
   setTranscribeLocale: (locale: string) => void;
   setCoexistWithOtherApps: (on: boolean) => void;
+  setStartTab: (tab: 'index' | 'clip' | 'recordings') => void;
   setActiveRecorder: (who: 'quick' | 'long' | null) => void;
   setKeepUnuploaded: (keep: boolean) => void;
   /** ★ を付け外しする。★ の付いた録音は自動削除されない */
@@ -121,6 +125,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [keepUnuploaded, setKeepUnuploadedState] = useState(true);
   const [transcribeLocale, setTranscribeLocaleState] = useState('ja-JP');
   const [coexistWithOtherApps, setCoexistState] = useState(true);
+  const [startTab, setStartTabState] = useState<'index' | 'clip' | 'recordings'>('index');
   const [activeRecorder, setActiveRecorder] = useState<'quick' | 'long' | null>(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -171,6 +176,10 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       if (savedLocale) setTranscribeLocaleState(savedLocale);
       const savedCoexist = await AsyncStorage.getItem(COEXIST_KEY);
       if (savedCoexist === 'false') setCoexistState(false);
+      const savedTab = await AsyncStorage.getItem(START_TAB_KEY);
+      if (savedTab === 'clip' || savedTab === 'recordings' || savedTab === 'index') {
+        setStartTabState(savedTab);
+      }
       const days = Number(savedRetention);
       if ((RETENTION_CHOICES as readonly number[]).includes(days)) {
         setRetentionDaysState(days as RetentionDays);
@@ -523,6 +532,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(TRANSCRIBE_LOCALE_KEY, locale);
   }, []);
 
+  const setStartTab = useCallback((tab: 'index' | 'clip' | 'recordings') => {
+    setStartTabState(tab);
+    AsyncStorage.setItem(START_TAB_KEY, tab);
+  }, []);
+
   const setCoexistWithOtherApps = useCallback((on: boolean) => {
     setCoexistState(on);
     AsyncStorage.setItem(COEXIST_KEY, String(on));
@@ -592,6 +606,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         coexistWithOtherApps,
         recordingAudioMode,
         activeRecorder,
+        startTab,
         theme,
         updateSettings: updateSettingsHandler,
         addRecording,
@@ -609,6 +624,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setKeepUnuploaded,
         setTranscribeLocale,
         setCoexistWithOtherApps,
+        setStartTab,
         setActiveRecorder,
         toggleProtected,
         runRetention,

@@ -34,6 +34,20 @@ export interface RecordingEntry {
   /** true なら自動削除の対象から外す */
   protected?: boolean;
 
+  /**
+   * 端末内で文字起こしした結果。画面を離れても消えないように録音に持たせる。
+   * 範囲を選び直したら作り直す。
+   */
+  transcript?: {
+    text: string;
+    /** 'analyzer'（iOS26+）か 'sf' */
+    engine: string;
+    /** どの範囲を起こしたか（秒） */
+    startSec: number;
+    endSec: number;
+    at: string;
+  };
+
   /** kind === 'clip' のとき、切り出し元と範囲 */
   sourceId?: string;
   clipStartSec?: number;

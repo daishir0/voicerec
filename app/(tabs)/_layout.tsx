@@ -2,15 +2,17 @@ import { Tabs, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Pressable } from 'react-native';
 import { Colors } from '@/constants/theme';
-import { useColorScheme } from '@/hooks/use-color-scheme';
+import { useApp } from '@/contexts/AppContext';
 
 export default function TabLayout() {
-  const colorScheme = useColorScheme();
+  const { isDarkMode, startTab } = useApp();
   const router = useRouter();
-  const tint = Colors[colorScheme === 'dark' ? 'dark' : 'light'].tint;
+  const tint = Colors[isDarkMode ? 'dark' : 'light'].tint;
 
   return (
     <Tabs
+      // 起動時にどのタブを開くか。切り出しを主に使う人は、ここを変えると1タップ減る
+      initialRouteName={startTab}
       screenOptions={{
         tabBarActiveTintColor: tint,
         headerRight: () => (
