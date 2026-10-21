@@ -168,6 +168,7 @@ public class VoicerecAudioModule: Module {
       return [
         "name": input?.portName ?? "",
         "type": input?.portType.rawValue ?? "",
+        "uid": input?.uid ?? "",
         "isBluetooth": Self.isBluetooth(input?.portType),
         "sampleRate": s.sampleRate,
       ]
@@ -186,17 +187,19 @@ public class VoicerecAudioModule: Module {
           var payload: [String: Any] = [
             "inputName": input?.portName ?? "",
             "inputType": input?.portType.rawValue ?? "",
+            "inputUID": input?.uid ?? "",
             "isBluetooth": Self.isBluetooth(input?.portType),
             "sampleRate": s.sampleRate,
           ]
           if let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
              let reason = AVAudioSession.RouteChangeReason(rawValue: raw) {
             payload["reason"] = Self.routeReasonString(reason)
-            // 入力そのものが変わったときだけ、呼び出し側に録り直しを促す
+            // ⚠️ **機器が抜き差しされたときだけ**を「入力が変わった」とみなす。
+            //    routeConfigurationChange は録音を始めただけでも飛んでくるので、
+            //    これを入れると「区切る→録り直す→また飛ぶ」で無限に回る
+            //    （2026-10-21、32ms のファイルが大量に作られた）。
             payload["inputChanged"] = (reason == .newDeviceAvailable
-                                       || reason == .oldDeviceUnavailable
-                                       || reason == .override
-                                       || reason == .routeConfigurationChange)
+                                       || reason == .oldDeviceUnavailable)
           } else {
             payload["reason"] = "unknown"
             payload["inputChanged"] = false

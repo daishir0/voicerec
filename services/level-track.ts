@@ -14,9 +14,6 @@ export const LEVELS_DIR = FileSystem.documentDirectory + 'levels/';
 /** 1秒に1サンプル。これを変えると既存ファイルの解釈が変わるので注意 */
 export const SAMPLES_PER_SEC = 1;
 const FLUSH_INTERVAL_MS = 60_000;
-/** メーターがこの dB を下回ったら無音とみなす */
-const SILENCE_DB = -45;
-
 /** メーター値(dBFS) を 0〜100 に畳む。null/NaN は無音として 0。 */
 export function meteringToLevel(db: number | null | undefined): number {
   if (db == null || Number.isNaN(db)) return 0;
@@ -119,42 +116,4 @@ export function downsample(levels: Uint8Array, max: number): number[] {
     out[i] = peak;
   }
   return out;
-}
-
-export type SpeechBlock = { startSec: number; endSec: number };
-
-/**
- * 声のかたまりを拾う。タップで会話単位を選べるようにするための下ごしらえ。
- *
- * @param minSilenceSec これ以上の無音が続いたら区切る
- * @param minBlockSec   これより短いかたまりは捨てる（咳やドアの音を拾わない）
- */
-export function detectSpeechBlocks(
-  levels: Uint8Array,
-  minSilenceSec = 8,
-  minBlockSec = 10,
-): SpeechBlock[] {
-  const threshold = meteringToLevel(SILENCE_DB);
-  const blocks: SpeechBlock[] = [];
-  let start = -1;
-  let silence = 0;
-
-  for (let i = 0; i < levels.length; i++) {
-    if (levels[i] > threshold) {
-      if (start < 0) start = i;
-      silence = 0;
-    } else if (start >= 0) {
-      silence++;
-      if (silence >= minSilenceSec) {
-        const end = i - silence + 1;
-        if (end - start >= minBlockSec) blocks.push({ startSec: start, endSec: end });
-        start = -1;
-        silence = 0;
-      }
-    }
-  }
-  if (start >= 0 && levels.length - start >= minBlockSec) {
-    blocks.push({ startSec: start, endSec: levels.length });
-  }
-  return blocks;
 }

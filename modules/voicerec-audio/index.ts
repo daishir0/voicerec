@@ -72,6 +72,8 @@ export type AudioRouteChangeEvent = {
   inputChanged: boolean;
   inputName: string;
   inputType: string;
+  /** 機器を見分けるための id。同じ機器なら録り直さない */
+  inputUID: string;
   isBluetooth: boolean;
   sampleRate: number;
 };
@@ -79,6 +81,7 @@ export type AudioRouteChangeEvent = {
 export type AudioInput = {
   name: string;
   type: string;
+  uid: string;
   isBluetooth: boolean;
   sampleRate: number;
 };

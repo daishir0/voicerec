@@ -8,7 +8,7 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View,
+  ActivityIndicator, Alert, Modal, Pressable, ScrollView, StyleSheet, Text, View,
 } from 'react-native';
 import {
   requestRecordingPermissionsAsync, setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus,
@@ -18,9 +18,9 @@ import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
 import { useApp } from '@/contexts/AppContext';
-import RangeTimeline, {
-  EDGE_PREVIEW_SEC, formatDuration, type PlayTarget, type Range,
-} from '@/components/RangeTimeline';
+import TimeRangePicker, {
+  formatDuration, type PlayRequest, type PlayTarget, type Range,
+} from '@/components/TimeRangePicker';
 import { CAF_PRESET, CAF_HIGH_QUALITY_PRESET } from '@/services/audio-recorder';
 import { LevelTrackWriter, loadLevels, meteringToLevel } from '@/services/level-track';
 import { createClipForUpload, transcribeRange } from '@/services/clip-service';
@@ -70,6 +70,7 @@ export default function ClipScreen() {
   const [notice, setNotice] = useState<string | null>(null);
   const [inputName, setInputName] = useState<string>('');
   const [freeBytes, setFreeBytes] = useState<number | null>(null);
+  const [picking, setPicking] = useState(false);
 
   const writerRef = useRef<LevelTrackWriter | null>(null);
   const startedAtRef = useRef<Date | null>(null);
@@ -97,6 +98,9 @@ export default function ClipScreen() {
   const breakAndResumeRef = useRef<(why: string) => Promise<void>>(async () => {});
   const wasRecordingRef = useRef(false);
   wasRecordingRef.current = state.isRecording;
+  // 区切り直しが重ならないようにする。重なると 32ms のファイルが大量にできる
+  const breakingRef = useRef(false);
+  const inputUidRef = useRef<string>('');
 
   useEffect(() => {
     VoicerecAudio.startInterruptionObserver();
@@ -112,12 +116,16 @@ export default function ClipScreen() {
     const subRoute = VoicerecAudio.addListener('onAudioRouteChange', e => {
       setInputName(e.isBluetooth ? `${e.inputName}（Bluetooth・音質が落ちます）` : e.inputName);
       if (!e.inputChanged || !wasRecordingRef.current) return;
-      // 入力が変わるとサンプルレートまで変わる。1本の途中で形式が変わらないよう区切る。
+      // ⚠️ **同じ機器なら録り直さない。** 2026-10-21、機器が変わっていないのに
+      //    区切り直しが連鎖して 32ms のファイルが大量にできた。
+      if (!e.inputUID || e.inputUID === inputUidRef.current) return;
+      inputUidRef.current = e.inputUID;
       addDebugLog(`入力が変わりました: ${e.inputName} (${e.reason})`);
-      void breakAndResumeRef.current(`入力が${e.inputName}に変わった`);
+      void breakAndResumeRef.current(`マイクが${e.inputName || '別の機器'}に変わった`);
     });
     try {
       const cur = VoicerecAudio.currentInput();
+      inputUidRef.current = cur.uid;
       setInputName(cur.isBluetooth ? `${cur.name}（Bluetooth・音質が落ちます）` : cur.name);
     } catch { /* 取れなくても困らない */ }
     return () => { subInt.remove(); subRoute.remove(); VoicerecAudio.stopInterruptionObserver(); };
@@ -171,23 +179,21 @@ export default function ClipScreen() {
     try { player.pause(); } catch { /* 解放済みなら何もしない */ }
   }, [player]);
 
-  const startPlay = useCallback(async (what: PlayTarget) => {
+  const startPlay = useCallback(async (req: PlayRequest) => {
     if (!source) return;
     // 録音用のモードのままだと受話口から鳴る。再生の前に切り替える。
     await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
-    const { startSec, endSec } = range;
-    const from = what === 'tail' ? Math.max(startSec, endSec - EDGE_PREVIEW_SEC) : startSec;
-    const to = what === 'head' ? Math.min(endSec, startSec + EDGE_PREVIEW_SEC) : endSec;
-    stopAtRef.current = to;
-    setPlaying(what);
+    // toSec が null なら、止めるまで鳴らす（端の確認は人によって聴きたい長さが違う）
+    stopAtRef.current = req.toSec;
+    setPlaying(req.what);
     try {
-      await player.seekTo(from);
+      await player.seekTo(req.fromSec);
       player.play();
     } catch (e: any) {
       stopPlay();
       Alert.alert('再生できませんでした', e?.message ?? String(e));
     }
-  }, [source, range, player, stopPlay]);
+  }, [source, player, stopPlay]);
 
   // 範囲の終わりまで来たら止める
   useEffect(() => {
@@ -251,6 +257,12 @@ export default function ClipScreen() {
 
       const uri = recorder.uri;
       if (!uri || !startedAt) return null;
+      // 1秒に満たないものは保存しない（区切り直しの拍子に生まれる空ファイル対策）
+      if (durationMs < 1000) {
+        await FileSystem.deleteAsync(uri, { idempotent: true }).catch(() => {});
+        await writer?.flush(true);
+        return null;
+      }
       const filename = filenameRef.current || `${stamp(new Date())}.caf`;
       const dest = RECORDINGS_DIR + filename;
       await FileSystem.moveAsync({ from: uri, to: dest });
@@ -316,6 +328,8 @@ export default function ClipScreen() {
    * 背面では録音を開始できない（OS の制限）ので、失敗したらその旨を残す。
    */
   breakAndResumeRef.current = async (why: string) => {
+    if (breakingRef.current) return;
+    breakingRef.current = true;
     try {
       await finalizeRecording();
       await startRecording();
@@ -324,6 +338,8 @@ export default function ClipScreen() {
     } catch (e: any) {
       setNotice(`${why}ため録音が止まりました。「録音を始める」で再開してください。`);
       addDebugLog(`自動の録り直しに失敗: ${e?.message ?? e}`);
+    } finally {
+      breakingRef.current = false;
     }
   };
 
@@ -438,31 +454,6 @@ export default function ClipScreen() {
         </>
       )}
 
-      {/* 切り出し元 */}
-      {longRecordings.length > 1 && (
-        <View style={styles.sourceRow}>
-          {longRecordings.map(r => {
-            const on = r.id === source?.id;
-            return (
-              <Pressable
-                key={r.id}
-                onPress={() => setSourceId(r.id)}
-                style={[styles.chip, {
-                  backgroundColor: on ? theme.accent : theme.bgSecondary,
-                  borderColor: on ? theme.accent : theme.border,
-                }]}
-              >
-                <Text style={{ color: on ? '#fff' : theme.text, fontSize: 12 }}>
-                  {new Date(r.startedAt ?? r.createdAt).toLocaleString('ja-JP', {
-                    month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
-                  })}
-                </Text>
-              </Pressable>
-            );
-          })}
-        </View>
-      )}
-
       {!source && !state.isRecording && (
         <Text style={[styles.empty, { color: theme.textSecondary }]}>
           まだ長い録音がありません。{'\n'}
@@ -475,10 +466,18 @@ export default function ClipScreen() {
         <>
           <View style={[styles.card, { backgroundColor: theme.bgSecondary, borderColor: theme.border }]}>
             <View style={styles.sourceHeader}>
-              <Text style={[styles.cardTitle, { color: theme.textSecondary, flex: 1 }]}>
-                {new Date(source.startedAt ?? source.createdAt).toLocaleString('ja-JP')} から
-                {' '}{formatDuration(totalSec)} ・ {formatBytes(source.fileSize)}
-              </Text>
+              <Pressable
+                onPress={() => longRecordings.length > 1 && setPicking(true)}
+                style={styles.sourcePick}
+              >
+                <Text style={[styles.cardTitle, { color: theme.textSecondary }]}>
+                  {new Date(source.startedAt ?? source.createdAt).toLocaleString('ja-JP')} から
+                  {' '}{formatDuration(totalSec)} ・ {formatBytes(source.fileSize)}
+                </Text>
+                {longRecordings.length > 1 && (
+                  <Ionicons name="chevron-down" size={14} color={theme.accent} />
+                )}
+              </Pressable>
               <Pressable onPress={() => toggleProtected(source.id)} hitSlop={10} style={styles.iconBtn}>
                 <Ionicons
                   name={source.protected ? 'star' : 'star-outline'}
@@ -495,7 +494,7 @@ export default function ClipScreen() {
                 ★ 自動削除の対象から外しています
               </Text>
             )}
-            <RangeTimeline
+            <TimeRangePicker
               levels={levels}
               startedAt={new Date(source.startedAt ?? source.createdAt)}
               durationSec={totalSec}
@@ -562,6 +561,48 @@ export default function ClipScreen() {
           )}
         </>
       )}
+      <Modal visible={picking} animationType="slide" transparent onRequestClose={() => setPicking(false)}>
+        <Pressable style={styles.modalBack} onPress={() => setPicking(false)}>
+          <Pressable style={[styles.sheet, { backgroundColor: theme.bg, borderColor: theme.border }]}>
+            <View style={[styles.sheetHead, { borderBottomColor: theme.border }]}>
+              <Text style={{ color: theme.text, fontSize: 15, fontWeight: '600' }}>録音を選ぶ</Text>
+              <Pressable onPress={() => setPicking(false)} hitSlop={10}>
+                <Text style={{ color: theme.accent, fontSize: 14 }}>閉じる</Text>
+              </Pressable>
+            </View>
+            <ScrollView style={{ maxHeight: 380 }}>
+              {longRecordings.map(r => {
+                const on = r.id === source?.id;
+                return (
+                  <Pressable
+                    key={r.id}
+                    onPress={() => { setSourceId(r.id); setPicking(false); }}
+                    style={[styles.sheetRow, { borderBottomColor: theme.border }]}
+                  >
+                    <Ionicons
+                      name={on ? 'checkmark' : 'ellipse-outline'}
+                      size={16}
+                      color={on ? theme.accent : 'transparent'}
+                    />
+                    <Text style={{ color: theme.text, fontSize: 14, flex: 1 }}>
+                      {new Date(r.startedAt ?? r.createdAt).toLocaleString('ja-JP', {
+                        month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
+                      })}
+                    </Text>
+                    {r.protected && <Ionicons name="star" size={13} color={theme.accent} />}
+                    <Text style={{ color: theme.textSecondary, fontSize: 12 }}>
+                      {formatDuration(r.duration / 1000)}
+                    </Text>
+                    <Text style={{ color: theme.textSecondary, fontSize: 12, width: 64, textAlign: 'right' }}>
+                      {formatBytes(r.fileSize)}
+                    </Text>
+                  </Pressable>
+                );
+              })}
+            </ScrollView>
+          </Pressable>
+        </Pressable>
+      </Modal>
     </ScrollView>
   );
 }
@@ -582,8 +623,20 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', gap: 8,
     padding: 10, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth,
   },
-  sourceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
-  chip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 14, borderWidth: StyleSheet.hairlineWidth },
+  sourcePick: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 4 },
+  modalBack: { flex: 1, backgroundColor: '#0008', justifyContent: 'flex-end' },
+  sheet: {
+    borderTopLeftRadius: 16, borderTopRightRadius: 16,
+    borderWidth: StyleSheet.hairlineWidth, paddingBottom: 32,
+  },
+  sheetHead: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    padding: 16, borderBottomWidth: StyleSheet.hairlineWidth,
+  },
+  sheetRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 10,
+    paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth,
+  },
   empty: { fontSize: 13, lineHeight: 22, textAlign: 'center', marginTop: 32 },
   card: { padding: 14, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, gap: 10 },
   cardTitle: { fontSize: 12 },
