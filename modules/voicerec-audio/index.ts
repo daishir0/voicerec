@@ -45,6 +45,23 @@ export type TrimResult = {
   elapsedMs: number;
 };
 
+export type TranscribeResult = {
+  text: string;
+  /** 実際に使ったエンジン */
+  engine: 'analyzer' | 'sf';
+  /** SFSpeech のときの分割数（1セッション1分の上限があるため） */
+  chunks: number;
+  elapsedMs: number;
+  /** analyzer を試して落ちたときの理由 */
+  fallbackReason?: string;
+};
+
+export type PrepareLocaleResult = {
+  installed: boolean;
+  downloaded?: boolean;
+  reason?: string;
+};
+
 type Events = {
   onAudioInterruption: (event: AudioInterruptionEvent) => void;
 };
@@ -55,6 +72,9 @@ declare class VoicerecAudio extends NativeModule<Events> {
   inspect(uri: string): Promise<AudioFileInfo>;
   trimToWav(uri: string, startSec: number, endSec: number, outUri: string): Promise<TrimResult>;
   trimToM4a(uri: string, startSec: number, endSec: number, outUri: string): Promise<TrimResult>;
+  /** engine: 'auto'（既定・iOS26+なら SpeechAnalyzer）/ 'analyzer' / 'sf' */
+  transcribe(uri: string, locale: string, engine: 'auto' | 'analyzer' | 'sf'): Promise<TranscribeResult>;
+  prepareLocale(locale: string): Promise<PrepareLocaleResult>;
   startInterruptionObserver(): boolean;
   stopInterruptionObserver(): boolean;
 }

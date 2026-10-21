@@ -108,7 +108,56 @@ public class VoicerecAudioModule: Module {
                                settings: Self.aacSettings)
     }
 
-    // ── 4. 録音の中断を検知する ──────────────────────────
+    // ── 4. 端末内で文字起こしする ────────────────────────
+    // iOS 26+ は SpeechAnalyzer（長時間向け・モデルは OS が持つ）。
+    // それ以前は SFSpeechRecognizer を 55 秒ずつに切って回す（1セッション1分の上限）。
+    AsyncFunction("transcribe") { (uri: String, locale: String, engine: String) -> [String: Any] in
+      let began = Date()
+      let url = Self.fileURL(uri)
+      let loc = Locale(identifier: locale)
+
+      if engine != "sf", #available(iOS 26.0, *) {
+        do {
+          let text = try await Self.transcribeWithAnalyzer(url: url, locale: loc)
+          return ["text": text, "engine": "analyzer", "chunks": 1,
+                  "elapsedMs": Int(Date().timeIntervalSince(began) * 1000)]
+        } catch {
+          if engine == "analyzer" { throw error }
+          // 自動なら黙って旧APIに落ちる。理由は返して分かるようにしておく
+          let (text, chunks) = try await Self.transcribeWithSF(url: url, locale: loc)
+          return ["text": text, "engine": "sf", "chunks": chunks,
+                  "fallbackReason": error.localizedDescription,
+                  "elapsedMs": Int(Date().timeIntervalSince(began) * 1000)]
+        }
+      }
+      let (text, chunks) = try await Self.transcribeWithSF(url: url, locale: loc)
+      return ["text": text, "engine": "sf", "chunks": chunks,
+              "elapsedMs": Int(Date().timeIntervalSince(began) * 1000)]
+    }
+
+    /// 言語モデルを先に入れておく（初回だけ時間がかかるので、設定で言語を変えた直後に呼ぶ）
+    AsyncFunction("prepareLocale") { (locale: String) -> [String: Any] in
+      if #available(iOS 26.0, *) {
+        let loc = Locale(identifier: locale)
+        let supported = await SpeechTranscriber.supportedLocales
+        guard supported.contains(where: { $0.identifier(.bcp47) == loc.identifier(.bcp47) }) else {
+          return ["installed": false, "reason": "この言語は端末内の音声認識に対応していません"]
+        }
+        let installed = await SpeechTranscriber.installedLocales
+        if installed.contains(where: { $0.identifier(.bcp47) == loc.identifier(.bcp47) }) {
+          return ["installed": true, "downloaded": false]
+        }
+        let t = SpeechTranscriber(locale: loc, transcriptionOptions: [],
+                                  reportingOptions: [], attributeOptions: [])
+        if let req = try await AssetInventory.assetInstallationRequest(supporting: [t]) {
+          try await req.downloadAndInstall()
+        }
+        return ["installed": true, "downloaded": true]
+      }
+      return ["installed": false, "reason": "iOS 26 以降が必要です"]
+    }
+
+    // ── 5. 録音の中断を検知する ──────────────────────────
     // 8時間録っていれば着信は必ず当たる。黙って止まるのが最悪なので拾って知らせる。
     Function("startInterruptionObserver") { () -> Bool in
       if self.interruptionObserver != nil { return true }
@@ -176,6 +225,97 @@ public class VoicerecAudioModule: Module {
     case .restricted: return "restricted"
     case .notDetermined: return "notDetermined"
     @unknown default: return "unknown"
+    }
+  }
+
+  /// iOS 26+ の SpeechAnalyzer。長時間の音声をそのまま渡せる。
+  ///
+  /// ⚠️ reportingOptions を空にしてある。途中経過（volatile）を出さない設定なので、
+  ///    返ってくる結果はすべて確定で、そのまま連結してよい。
+  /// ⚠️ finalizeAndFinishThroughEndOfInput() を呼ばないと results の for-await が終わらない。
+  @available(iOS 26.0, *)
+  private static func transcribeWithAnalyzer(url: URL, locale: Locale) async throws -> String {
+    let supported = await SpeechTranscriber.supportedLocales
+    guard supported.contains(where: { $0.identifier(.bcp47) == locale.identifier(.bcp47) }) else {
+      throw Exception(name: "LocaleNotSupported",
+                      description: "\(locale.identifier) は端末内の音声認識に対応していません")
+    }
+    let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [],
+                                        reportingOptions: [], attributeOptions: [])
+    let installed = await SpeechTranscriber.installedLocales
+    if !installed.contains(where: { $0.identifier(.bcp47) == locale.identifier(.bcp47) }) {
+      if let req = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+        try await req.downloadAndInstall()
+      }
+    }
+
+    let analyzer = SpeechAnalyzer(modules: [transcriber])
+    let file = try AVAudioFile(forReading: url)
+
+    // 読み出しは音声を流し込むのと同時に回す（先に finalize すると取りこぼす）
+    let collect = Task { () -> String in
+      var out = ""
+      for try await result in transcriber.results {
+        out += String(result.text.characters)
+      }
+      return out
+    }
+    try await analyzer.analyzeSequence(from: file)
+    try await analyzer.finalizeAndFinishThroughEndOfInput()
+    return try await collect.value
+  }
+
+  /// SFSpeechRecognizer。1セッション1分の上限があるので 55 秒ずつに切って回す。
+  private static func transcribeWithSF(url: URL, locale: Locale) async throws -> (String, Int) {
+    guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
+      throw Exception(name: "RecognizerUnavailable",
+                      description: "\(locale.identifier) の音声認識が使えません")
+    }
+    recognizer.defaultTaskHint = .dictation
+
+    let asset = AVURLAsset(url: url)
+    let total = CMTimeGetSeconds(try await asset.load(.duration))
+    guard total > 0 else {
+      throw Exception(name: "EmptyAudio", description: "長さが分かりません（録音中のファイル？）")
+    }
+
+    let chunk = 55.0
+    var texts: [String] = []
+    var at = 0.0
+    let tmpDir = FileManager.default.temporaryDirectory
+    while at < total {
+      let to = min(at + chunk, total)
+      let part = tmpDir.appendingPathComponent("sfchunk-\(UUID().uuidString).wav")
+      _ = try await transcode(src: url, dst: part, startSec: at, endSec: to,
+                              fileType: .wav, settings: pcmSettings)
+      defer { try? FileManager.default.removeItem(at: part) }
+      texts.append(try await recognizeOne(recognizer: recognizer, url: part))
+      at = to
+    }
+    return (texts.joined(separator: ""), texts.count)
+  }
+
+  private static func recognizeOne(recognizer: SFSpeechRecognizer, url: URL) async throws -> String {
+    try await withCheckedThrowingContinuation { cont in
+      let request = SFSpeechURLRecognitionRequest(url: url)
+      request.shouldReportPartialResults = false
+      // 端末内で処理する。できない端末ではサーバーに送られるので、使えるときだけ立てる
+      if recognizer.supportsOnDeviceRecognition {
+        request.requiresOnDeviceRecognition = true
+      }
+      var resumed = false
+      recognizer.recognitionTask(with: request) { result, error in
+        if resumed { return }
+        if let error = error {
+          resumed = true
+          cont.resume(throwing: error)
+          return
+        }
+        if let result = result, result.isFinal {
+          resumed = true
+          cont.resume(returning: result.bestTranscription.formattedString)
+        }
+      }
     }
   }
 

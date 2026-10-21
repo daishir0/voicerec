@@ -151,6 +151,41 @@ export default function DiagnosticsScreen() {
     }
   }, [log]);
 
+  // ── 4. 録音を止めずに切り出せるか ────────────────────
+  // CAF は録音中でも「読める」が、長さは 0 と返ってくる（実機で確認）。
+  // 範囲を自分で指定すれば中身を取り出せるのか、を確かめる。
+  const runLiveTrim = useCallback(async () => {
+    const src = recorder.uri ?? recordedUri.current;
+    if (!src) { Alert.alert('先に録音を開始してください'); return; }
+    if (!state.isRecording) { Alert.alert('録音中に押してください'); return; }
+    setBusy(true);
+    try {
+      const r = await VoicerecAudio.trimToWav(src, 0, 5, WORK_DIR + 'live.wav');
+      log(`🔴 録音中の切り出し: 成功 ${r.durationSec.toFixed(1)}秒 → ${(r.fileSize / 1024).toFixed(0)}KB / ${r.elapsedMs}ms`);
+    } catch (e: any) {
+      log(`🔴 録音中の切り出し: 失敗 ${e?.message ?? e}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [recorder, state.isRecording, log]);
+
+  // ── 5. 端末内で文字起こし ────────────────────────────
+  const runTranscribe = useCallback(async () => {
+    const src = recordedUri.current;
+    if (!src) { Alert.alert('先に録音してください'); return; }
+    setBusy(true);
+    try {
+      const r = await VoicerecAudio.transcribe(src, 'ja-JP', 'auto');
+      log(`🗣 文字起こし[${r.engine}] ${r.elapsedMs}ms 分割${r.chunks}`);
+      if (r.fallbackReason) log(`   （analyzer が落ちた理由: ${r.fallbackReason}）`);
+      log(`   「${r.text || '(空)'}」`);
+    } catch (e: any) {
+      log(`❌ 文字起こし失敗: ${e?.message ?? e}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [log]);
+
   const copyAll = useCallback(async () => {
     await Clipboard.setStringAsync(lines.join('\n'));
     Alert.alert('コピーしました', `${lines.length} 行をクリップボードに入れました。`);
@@ -200,6 +235,8 @@ export default function DiagnosticsScreen() {
           <Btn label="② 録りながら読めるか試す" onPress={startRecording} />
         )}
         <Btn label="③ 2〜12秒を切り出す" onPress={runTrim} />
+        <Btn label="④ 録音中のまま切り出す（録音中に押す）" onPress={runLiveTrim} />
+        <Btn label="⑤ 端末内で文字起こし" onPress={runTranscribe} />
       </View>
 
       <ScrollView style={[styles.logBox, { backgroundColor: theme.bgSecondary, borderColor: theme.border }]}>
