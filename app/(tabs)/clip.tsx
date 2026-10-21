@@ -11,17 +11,24 @@ import {
   ActivityIndicator, Alert, Pressable, ScrollView, StyleSheet, Text, View,
 } from 'react-native';
 import {
-  requestRecordingPermissionsAsync, setAudioModeAsync, useAudioRecorder, useAudioRecorderState,
+  requestRecordingPermissionsAsync, setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus,
+  useAudioRecorder, useAudioRecorderState,
 } from 'expo-audio';
 import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
 import { useApp } from '@/contexts/AppContext';
-import RangeTimeline, { formatClock, formatDuration, type Range } from '@/components/RangeTimeline';
+import RangeTimeline, {
+  EDGE_PREVIEW_SEC, formatDuration, type PlayTarget, type Range,
+} from '@/components/RangeTimeline';
 import { CAF_PRESET, CAF_HIGH_QUALITY_PRESET } from '@/services/audio-recorder';
 import { LevelTrackWriter, loadLevels, meteringToLevel } from '@/services/level-track';
 import { createClipForUpload, transcribeRange } from '@/services/clip-service';
+import { deleteLevels } from '@/services/level-track';
 import { formatBytes } from '@/services/retention';
+import {
+  freeDiskBytes, formatHours, FREE_SPACE_CHECK_MS, MIN_FREE_BYTES,
+} from '@/services/recording-guard';
 import { log } from '@/services/logger';
 import VoicerecAudio from '@/modules/voicerec-audio';
 import { RecordingEntry } from '@/types/recording';
@@ -45,8 +52,9 @@ function stamp(d: Date): string {
 
 export default function ClipScreen() {
   const {
-    theme, recordings, addRecording, updateRecording, uploadPending, recordingQuality,
-    transcribeLocale, activeRecorder, setActiveRecorder, addDebugLog, runRetention,
+    theme, recordings, addRecording, deleteRecording, toggleProtected, uploadPending,
+    recordingQuality, transcribeLocale, activeRecorder, setActiveRecorder, addDebugLog,
+    runRetention, coexistWithOtherApps, recordingAudioMode,
   } = useApp();
 
   const recorder = useAudioRecorder(
@@ -59,6 +67,9 @@ export default function ClipScreen() {
   const [range, setRange] = useState<Range>({ startSec: 0, endSec: 0 });
   const [busy, setBusy] = useState<string | null>(null);
   const [transcript, setTranscript] = useState<{ text: string; engine: string; ms: number } | null>(null);
+  const [notice, setNotice] = useState<string | null>(null);
+  const [inputName, setInputName] = useState<string>('');
+  const [freeBytes, setFreeBytes] = useState<number | null>(null);
 
   const writerRef = useRef<LevelTrackWriter | null>(null);
   const startedAtRef = useRef<Date | null>(null);
@@ -74,17 +85,60 @@ export default function ClipScreen() {
     [longRecordings, sourceId],
   );
 
-  // 中断（着信・他アプリのマイク奪取）を拾う。8時間録っていれば必ず当たる。
+  // 再生して確かめる。範囲の端だけ聴ければ、たいていの確認は足りる。
+  const playSource = useMemo(() => (source ? { uri: source.uri } : undefined), [source?.uri]);
+  const player = useAudioPlayer(playSource, { updateInterval: 150 });
+  const playerStatus = useAudioPlayerStatus(player);
+  const [playing, setPlaying] = useState<PlayTarget | null>(null);
+  const stopAtRef = useRef<number | null>(null);
+
+
+  // 中断と経路変更を見張る。録り直しは下で定義する関数に任せる（ref 経由）。
+  const breakAndResumeRef = useRef<(why: string) => Promise<void>>(async () => {});
+  const wasRecordingRef = useRef(false);
+  wasRecordingRef.current = state.isRecording;
+
   useEffect(() => {
     VoicerecAudio.startInterruptionObserver();
-    const sub = VoicerecAudio.addListener('onAudioInterruption', e => {
+    const subInt = VoicerecAudio.addListener('onAudioInterruption', e => {
       addDebugLog(`録音の中断: ${e.type}${e.shouldResume ? '（再開可）' : ''}`);
       if (e.type === 'began') {
-        Alert.alert('録音が中断されました', '通話などで録音が止まりました。画面に戻ったら再開してください。');
+        setNotice('通話などで録音が中断されました。終わり次第、自動で録り直します。');
+      } else if (e.type === 'ended' && wasRecordingRef.current) {
+        // ⚠️ 背面からは録音を開始できない（OS の制限）。失敗したらそう伝える。
+        void breakAndResumeRef.current('中断から復帰');
       }
     });
-    return () => { sub.remove(); VoicerecAudio.stopInterruptionObserver(); };
+    const subRoute = VoicerecAudio.addListener('onAudioRouteChange', e => {
+      setInputName(e.isBluetooth ? `${e.inputName}（Bluetooth・音質が落ちます）` : e.inputName);
+      if (!e.inputChanged || !wasRecordingRef.current) return;
+      // 入力が変わるとサンプルレートまで変わる。1本の途中で形式が変わらないよう区切る。
+      addDebugLog(`入力が変わりました: ${e.inputName} (${e.reason})`);
+      void breakAndResumeRef.current(`入力が${e.inputName}に変わった`);
+    });
+    try {
+      const cur = VoicerecAudio.currentInput();
+      setInputName(cur.isBluetooth ? `${cur.name}（Bluetooth・音質が落ちます）` : cur.name);
+    } catch { /* 取れなくても困らない */ }
+    return () => { subInt.remove(); subRoute.remove(); VoicerecAudio.stopInterruptionObserver(); };
   }, [addDebugLog]);
+
+  // 空き容量を定期的に見る。足りなくなったら止めて知らせる（静かに壊れるより良い）
+  useEffect(() => {
+    if (!state.isRecording) return;
+    let alive = true;
+    const timer = setInterval(async () => {
+      const free = await freeDiskBytes();
+      if (!alive) return;
+      setFreeBytes(free);
+      if (free < MIN_FREE_BYTES) {
+        await stopRecordingRef.current();
+        Alert.alert('空き容量が足りないので録音を止めました',
+          `残り ${formatBytes(free)}。ここまでの録音は保存されています。`);
+      }
+    }, FREE_SPACE_CHECK_MS);
+    return () => { alive = false; clearInterval(timer); };
+  }, [state.isRecording]);
 
   // 毎秒の音量を記録する（波形タイムラインの元データ）
   useEffect(() => {
@@ -111,20 +165,60 @@ export default function ClipScreen() {
     return () => { alive = false; };
   }, [source?.id, source?.levelsUri, source?.duration]);
 
+  const stopPlay = useCallback(() => {
+    stopAtRef.current = null;
+    setPlaying(null);
+    try { player.pause(); } catch { /* 解放済みなら何もしない */ }
+  }, [player]);
+
+  const startPlay = useCallback(async (what: PlayTarget) => {
+    if (!source) return;
+    // 録音用のモードのままだと受話口から鳴る。再生の前に切り替える。
+    await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
+    const { startSec, endSec } = range;
+    const from = what === 'tail' ? Math.max(startSec, endSec - EDGE_PREVIEW_SEC) : startSec;
+    const to = what === 'head' ? Math.min(endSec, startSec + EDGE_PREVIEW_SEC) : endSec;
+    stopAtRef.current = to;
+    setPlaying(what);
+    try {
+      await player.seekTo(from);
+      player.play();
+    } catch (e: any) {
+      stopPlay();
+      Alert.alert('再生できませんでした', e?.message ?? String(e));
+    }
+  }, [source, range, player, stopPlay]);
+
+  // 範囲の終わりまで来たら止める
+  useEffect(() => {
+    if (playing == null || stopAtRef.current == null) return;
+    if (playerStatus.currentTime >= stopAtRef.current) stopPlay();
+    else if (playerStatus.didJustFinish) stopPlay();
+  }, [playing, playerStatus.currentTime, playerStatus.didJustFinish, stopPlay]);
+
+  // 選ぶ録音を変えたら再生は止める
+  useEffect(() => { stopPlay(); }, [source?.id, stopPlay]);
+
   const startRecording = useCallback(async () => {
     if (activeRecorder === 'quick') {
       Alert.alert('録音中です', '「録音」タブで録音しています。先にそちらを停止してください。');
       return;
     }
+    stopPlay();
     const { status } = await requestRecordingPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('マイク権限', 'マイクへのアクセスを許可してください。');
       return;
     }
-    await setAudioModeAsync({
-      allowsRecording: true, playsInSilentMode: true,
-      shouldPlayInBackground: true, allowsBackgroundRecording: true,
-    });
+    const free = await freeDiskBytes();
+    setFreeBytes(free);
+    if (free < MIN_FREE_BYTES) {
+      Alert.alert('空き容量が足りません',
+        `残り ${formatBytes(free)} です。録音すると書き込みに失敗します。\n` +
+        '設定の自動削除を短くするか、不要なデータを消してください。');
+      return;
+    }
+    await setAudioModeAsync(recordingAudioMode);
     const dir = await FileSystem.getInfoAsync(RECORDINGS_DIR);
     if (!dir.exists) await FileSystem.makeDirectoryAsync(RECORDINGS_DIR, { intermediates: true });
 
@@ -143,7 +237,7 @@ export default function ClipScreen() {
       writerRef.current = null;
       Alert.alert('エラー', '録音を開始できませんでした。\n' + (err?.message ?? ''));
     }
-  }, [recorder, activeRecorder, setActiveRecorder]);
+  }, [recorder, activeRecorder, setActiveRecorder, stopPlay]);
 
   /** いま録っているものを確定して保存する。返り値がその録音。 */
   const finalizeRecording = useCallback(async (): Promise<RecordingEntry | null> => {
@@ -214,6 +308,49 @@ export default function ClipScreen() {
     await finalizeRecording();
   }, [finalizeRecording]);
 
+  const stopRecordingRef = useRef<() => Promise<void>>(async () => {});
+  stopRecordingRef.current = stopRecording;
+
+  /**
+   * 中断や入力の切り替わりで、いったん区切って録り直す。
+   * 背面では録音を開始できない（OS の制限）ので、失敗したらその旨を残す。
+   */
+  breakAndResumeRef.current = async (why: string) => {
+    try {
+      await finalizeRecording();
+      await startRecording();
+      setNotice(`${why}ため、いったん区切って録音を続けています。`);
+      addDebugLog(`自動で録り直しました（${why}）`);
+    } catch (e: any) {
+      setNotice(`${why}ため録音が止まりました。「録音を始める」で再開してください。`);
+      addDebugLog(`自動の録り直しに失敗: ${e?.message ?? e}`);
+    }
+  };
+
+  const doDelete = useCallback(() => {
+    if (!source) return;
+    Alert.alert(
+      'この録音を削除しますか',
+      `${new Date(source.startedAt ?? source.createdAt).toLocaleString('ja-JP')} から ` +
+      `${formatDuration(source.duration / 1000)}\n切り出し済みのクリップは残ります。`,
+      [
+        { text: 'やめる', style: 'cancel' },
+        {
+          text: '削除', style: 'destructive',
+          onPress: async () => {
+            stopPlay();
+            try {
+              await FileSystem.deleteAsync(source.uri, { idempotent: true });
+            } catch { /* ファイルが無くても一覧からは消す */ }
+            await deleteLevels(source.levelsUri);
+            await deleteRecording(source.id);
+            setSourceId(null);
+          },
+        },
+      ],
+    );
+  }, [source, deleteRecording, stopPlay]);
+
   const doTranscribe = useCallback(async () => {
     if (!source) return;
     setBusy('文字起こし中…');
@@ -271,6 +408,15 @@ export default function ClipScreen() {
         </Text>
       </Pressable>
 
+      {notice && (
+        <Pressable onPress={() => setNotice(null)}
+          style={[styles.notice, { backgroundColor: theme.bgTertiary, borderColor: theme.border }]}>
+          <Ionicons name="information-circle-outline" size={16} color={theme.accent} />
+          <Text style={{ color: theme.text, fontSize: 12, flex: 1 }}>{notice}</Text>
+          <Ionicons name="close" size={14} color={theme.textSecondary} />
+        </Pressable>
+      )}
+
       {state.isRecording && (
         <>
           <Pressable
@@ -285,6 +431,9 @@ export default function ClipScreen() {
           </Pressable>
           <Text style={[styles.note, { color: theme.textSecondary }]}>
             区切ったあとも録音は続きます（止まるのは1秒未満）。
+            {inputName ? `\nマイク: ${inputName}` : ''}
+            {freeBytes != null ? `\n空き ${formatBytes(freeBytes)}（${formatHours(freeBytes, 2048)}ぶん）` : ''}
+            {coexistWithOtherApps ? '' : '\n他アプリが音を鳴らすと録音が止まります（設定で変えられます）'}
           </Text>
         </>
       )}
@@ -325,10 +474,27 @@ export default function ClipScreen() {
       {source && (
         <>
           <View style={[styles.card, { backgroundColor: theme.bgSecondary, borderColor: theme.border }]}>
-            <Text style={[styles.cardTitle, { color: theme.textSecondary }]}>
-              {new Date(source.startedAt ?? source.createdAt).toLocaleString('ja-JP')} から
-              {' '}{formatDuration(totalSec)} ・ {formatBytes(source.fileSize)}
-            </Text>
+            <View style={styles.sourceHeader}>
+              <Text style={[styles.cardTitle, { color: theme.textSecondary, flex: 1 }]}>
+                {new Date(source.startedAt ?? source.createdAt).toLocaleString('ja-JP')} から
+                {' '}{formatDuration(totalSec)} ・ {formatBytes(source.fileSize)}
+              </Text>
+              <Pressable onPress={() => toggleProtected(source.id)} hitSlop={10} style={styles.iconBtn}>
+                <Ionicons
+                  name={source.protected ? 'star' : 'star-outline'}
+                  size={18}
+                  color={source.protected ? theme.accent : theme.textSecondary}
+                />
+              </Pressable>
+              <Pressable onPress={doDelete} hitSlop={10} style={styles.iconBtn}>
+                <Ionicons name="trash-outline" size={18} color={theme.red} />
+              </Pressable>
+            </View>
+            {source.protected && (
+              <Text style={[styles.cardTitle, { color: theme.textSecondary }]}>
+                ★ 自動削除の対象から外しています
+              </Text>
+            )}
             <RangeTimeline
               levels={levels}
               startedAt={new Date(source.startedAt ?? source.createdAt)}
@@ -337,6 +503,11 @@ export default function ClipScreen() {
               onChange={setRange}
               theme={theme}
               bytesPerSec={source.duration > 0 ? source.fileSize / (source.duration / 1000) : 2048}
+              playheadSec={playing ? playerStatus.currentTime : null}
+              playing={playing}
+              onPlay={startPlay}
+              onStop={stopPlay}
+              playDisabledReason={state.isRecording ? '録音中は再生できません' : null}
             />
           </View>
 
@@ -406,12 +577,18 @@ const styles = StyleSheet.create({
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 8,
     paddingVertical: 12, borderRadius: 10, borderWidth: 1,
   },
-  note: { fontSize: 12, textAlign: 'center' },
+  note: { fontSize: 12, textAlign: 'center', lineHeight: 18 },
+  notice: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    padding: 10, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth,
+  },
   sourceRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 8 },
   chip: { paddingHorizontal: 12, paddingVertical: 7, borderRadius: 14, borderWidth: StyleSheet.hairlineWidth },
   empty: { fontSize: 13, lineHeight: 22, textAlign: 'center', marginTop: 32 },
   card: { padding: 14, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, gap: 10 },
   cardTitle: { fontSize: 12 },
+  sourceHeader: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  iconBtn: { padding: 4 },
   actions: { flexDirection: 'row', gap: 10 },
   action: { flex: 1, alignItems: 'center', gap: 4, paddingVertical: 16, borderRadius: 12 },
   actionLabel: { fontSize: 13, fontWeight: '600' },

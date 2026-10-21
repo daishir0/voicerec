@@ -43,7 +43,7 @@ function generateFilename(ext: string): string {
 
 export default function RecordScreen() {
   const { theme, addRecording, uploadPending, recordingQuality, addDebugLog,
-          activeRecorder, setActiveRecorder } = useApp();
+          activeRecorder, setActiveRecorder, recordingAudioMode } = useApp();
   const [isRecording, setIsRecording] = useState(false);
   const [useFallback, setUseFallback] = useState(false);
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
@@ -54,12 +54,7 @@ export default function RecordScreen() {
   useEffect(() => {
     (async () => {
       try {
-        await setAudioModeAsync({
-          allowsRecording: true,
-          playsInSilentMode: true,
-          shouldPlayInBackground: true,
-          allowsBackgroundRecording: true,
-        });
+        await setAudioModeAsync(recordingAudioMode);
         setAudioModeReady(true);
       } catch (err) {
         console.error('setAudioModeAsync error:', err);
@@ -101,14 +96,8 @@ export default function RecordScreen() {
 
     try {
       // 録音モードが未準備なら再度設定
-      if (!audioModeReady) {
-        await setAudioModeAsync({
-          allowsRecording: true,
-          playsInSilentMode: true,
-          shouldPlayInBackground: true,
-          allowsBackgroundRecording: true,
-        });
-      }
+      // 再生で allowsRecording:false にしていることがあるので、毎回入れ直す
+      await setAudioModeAsync(recordingAudioMode);
 
       filenameRef.current = generateFilename(getFileExtension());
 

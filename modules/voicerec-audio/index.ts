@@ -65,8 +65,27 @@ export type PrepareLocaleResult = {
   reason?: string;
 };
 
+/** 経路の変化。イヤホンや Bluetooth の抜き差しで入力が変わると録音が壊れうる。 */
+export type AudioRouteChangeEvent = {
+  reason: string;
+  /** 入力そのものが変わったか。true なら録り直しを検討する */
+  inputChanged: boolean;
+  inputName: string;
+  inputType: string;
+  isBluetooth: boolean;
+  sampleRate: number;
+};
+
+export type AudioInput = {
+  name: string;
+  type: string;
+  isBluetooth: boolean;
+  sampleRate: number;
+};
+
 type Events = {
   onAudioInterruption: (event: AudioInterruptionEvent) => void;
+  onAudioRouteChange: (event: AudioRouteChangeEvent) => void;
 };
 
 declare class VoicerecAudio extends NativeModule<Events> {
@@ -78,6 +97,8 @@ declare class VoicerecAudio extends NativeModule<Events> {
   /** engine: 'auto'（既定・iOS26+なら SpeechAnalyzer）/ 'analyzer' / 'sf' */
   transcribe(uri: string, locale: string, engine: 'auto' | 'analyzer' | 'sf'): Promise<TranscribeResult>;
   prepareLocale(locale: string): Promise<PrepareLocaleResult>;
+  currentInput(): AudioInput;
+  /** 中断と経路変更の両方を見張る */
   startInterruptionObserver(): boolean;
   stopInterruptionObserver(): boolean;
 }

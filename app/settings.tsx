@@ -46,6 +46,8 @@ export default function SettingsScreen() {
     setKeepUnuploaded,
     transcribeLocale,
     setTranscribeLocale,
+    coexistWithOtherApps,
+    setCoexistWithOtherApps,
   } = useApp();
   const router = useRouter();
 
@@ -192,6 +194,27 @@ export default function SettingsScreen() {
                   );
                 }
               }}
+              trackColor={{ false: theme.bgTertiary, true: theme.accent }}
+            />
+          </View>
+        </View>
+
+        {/* 他アプリとの共存 */}
+        <View style={[styles.debugSection, { borderTopColor: theme.border }]}>
+          <View style={styles.debugToggleRow}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={[styles.label, { color: theme.textSecondary, marginTop: 0 }]}>
+                他のアプリの音で録音を止めない
+              </Text>
+              <Text style={[styles.qualityHint, { color: theme.textSecondary }]}>
+                {coexistWithOtherApps
+                  ? '動画や音楽が始まっても録音を続けます。スピーカーから出た音も入ります。'
+                  : '他のアプリが音を鳴らすと、iOS が録音を中断します。'}
+              </Text>
+            </View>
+            <Switch
+              value={coexistWithOtherApps}
+              onValueChange={setCoexistWithOtherApps}
               trackColor={{ false: theme.bgTertiary, true: theme.accent }}
             />
           </View>

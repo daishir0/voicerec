@@ -15,11 +15,12 @@ import Speech
 
 public class VoicerecAudioModule: Module {
   private var interruptionObserver: NSObjectProtocol?
+  private var routeObserver: NSObjectProtocol?
 
   public func definition() -> ModuleDefinition {
     Name("VoicerecAudio")
 
-    Events("onAudioInterruption")
+    Events("onAudioInterruption", "onAudioRouteChange")
 
     // ── 1. 端末内音声認識の可否 ──────────────────────────
     AsyncFunction("probe") { (locale: String) -> [String: Any] in
@@ -159,7 +160,50 @@ public class VoicerecAudioModule: Module {
 
     // ── 5. 録音の中断を検知する ──────────────────────────
     // 8時間録っていれば着信は必ず当たる。黙って止まるのが最悪なので拾って知らせる。
+    /// いま録音に使っている入力。Bluetooth に取られると音質が大きく落ちるので、
+    /// 画面に出して気づけるようにする。
+    Function("currentInput") { () -> [String: Any] in
+      let s = AVAudioSession.sharedInstance()
+      let input = s.currentRoute.inputs.first
+      return [
+        "name": input?.portName ?? "",
+        "type": input?.portType.rawValue ?? "",
+        "isBluetooth": Self.isBluetooth(input?.portType),
+        "sampleRate": s.sampleRate,
+      ]
+    }
+
     Function("startInterruptionObserver") { () -> Bool in
+      if self.routeObserver == nil {
+        // ⚠️ イヤホンや Bluetooth を抜き差しすると入力が変わり、サンプルレートまで変わる。
+        //    録音中に変わると、そのままでは1本のファイルの途中で形式が変わってしまう。
+        self.routeObserver = NotificationCenter.default.addObserver(
+          forName: AVAudioSession.routeChangeNotification,
+          object: AVAudioSession.sharedInstance(), queue: .main
+        ) { [weak self] note in
+          let s = AVAudioSession.sharedInstance()
+          let input = s.currentRoute.inputs.first
+          var payload: [String: Any] = [
+            "inputName": input?.portName ?? "",
+            "inputType": input?.portType.rawValue ?? "",
+            "isBluetooth": Self.isBluetooth(input?.portType),
+            "sampleRate": s.sampleRate,
+          ]
+          if let raw = note.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+             let reason = AVAudioSession.RouteChangeReason(rawValue: raw) {
+            payload["reason"] = Self.routeReasonString(reason)
+            // 入力そのものが変わったときだけ、呼び出し側に録り直しを促す
+            payload["inputChanged"] = (reason == .newDeviceAvailable
+                                       || reason == .oldDeviceUnavailable
+                                       || reason == .override
+                                       || reason == .routeConfigurationChange)
+          } else {
+            payload["reason"] = "unknown"
+            payload["inputChanged"] = false
+          }
+          self?.sendEvent("onAudioRouteChange", payload)
+        }
+      }
       if self.interruptionObserver != nil { return true }
       self.interruptionObserver = NotificationCenter.default.addObserver(
         forName: AVAudioSession.interruptionNotification,
@@ -184,6 +228,10 @@ public class VoicerecAudioModule: Module {
       if let o = self.interruptionObserver {
         NotificationCenter.default.removeObserver(o)
         self.interruptionObserver = nil
+      }
+      if let o = self.routeObserver {
+        NotificationCenter.default.removeObserver(o)
+        self.routeObserver = nil
       }
       return true
     }
@@ -216,6 +264,25 @@ public class VoicerecAudioModule: Module {
     let bytes = [UInt8((id >> 24) & 0xFF), UInt8((id >> 16) & 0xFF),
                  UInt8((id >> 8) & 0xFF), UInt8(id & 0xFF)]
     return String(bytes: bytes, encoding: .ascii) ?? "?"
+  }
+
+  private static func isBluetooth(_ type: AVAudioSession.Port?) -> Bool {
+    guard let type = type else { return false }
+    return type == .bluetoothHFP || type == .bluetoothA2DP || type == .bluetoothLE
+  }
+
+  private static func routeReasonString(_ r: AVAudioSession.RouteChangeReason) -> String {
+    switch r {
+    case .newDeviceAvailable: return "newDeviceAvailable"
+    case .oldDeviceUnavailable: return "oldDeviceUnavailable"
+    case .categoryChange: return "categoryChange"
+    case .override: return "override"
+    case .wakeFromSleep: return "wakeFromSleep"
+    case .noSuitableRouteForCategory: return "noSuitableRouteForCategory"
+    case .routeConfigurationChange: return "routeConfigurationChange"
+    case .unknown: return "unknown"
+    @unknown default: return "unknown"
+    }
   }
 
   private static func authString(_ s: SFSpeechRecognizerAuthorizationStatus) -> String {

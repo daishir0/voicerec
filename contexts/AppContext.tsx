@@ -1,4 +1,4 @@
-import React, { createContext, useContext, useState, useEffect, useCallback, useRef } from 'react';
+import React, { createContext, useContext, useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import { useColorScheme, AppState } from 'react-native';
 import * as FileSystem from 'expo-file-system/legacy';
 import { ServerSettings, RecordingEntry } from '@/types/recording';
@@ -6,6 +6,7 @@ import { loadSettings, saveSettings, loadRecordings, saveRecordings } from '@/se
 import { uploadRecording } from '@/services/upload-service';
 import { log, registerLogListener } from '@/services/logger';
 import type { RecordingQuality } from '@/services/audio-recorder';
+import { recoverOrphanRecordings } from '@/services/recording-guard';
 import {
   applyRetention,
   DEFAULT_RETENTION_DAYS,
@@ -28,6 +29,7 @@ const NOTIFICATIONS_ENABLED_KEY = 'rec18082_notificationsEnabled';
 const RETENTION_DAYS_KEY = 'rec18082_retentionDays';
 const KEEP_UNUPLOADED_KEY = 'rec18082_keepUnuploaded';
 const TRANSCRIBE_LOCALE_KEY = 'rec18082_transcribeLocale';
+const COEXIST_KEY = 'rec18082_coexistWithOtherApps';
 const RECORDINGS_DIR = FileSystem.documentDirectory + 'recordings/';
 
 interface Theme {
@@ -55,6 +57,19 @@ interface AppContextType {
   keepUnuploaded: boolean;
   /** 端末内の文字起こしに使う言語 */
   transcribeLocale: string;
+  /**
+   * 他アプリの音を止めずに録り続けるか。
+   * true なら動画や音楽が始まっても録音が中断されない代わりに、スピーカーから出た音を拾う。
+   */
+  coexistWithOtherApps: boolean;
+  /** 録音を始めるときに渡す音声モード。設定を1箇所にまとめる */
+  recordingAudioMode: {
+    allowsRecording: true;
+    playsInSilentMode: true;
+    shouldPlayInBackground: true;
+    allowsBackgroundRecording: true;
+    interruptionMode: 'mixWithOthers' | 'doNotMix';
+  };
   /** いまどちらのタブが録音しているか。録音機は1つしか動かせない */
   activeRecorder: 'quick' | 'long' | null;
   theme: Theme;
@@ -72,6 +87,7 @@ interface AppContextType {
   setNotificationsEnabled: (enabled: boolean) => Promise<boolean>;
   setRetentionDays: (days: RetentionDays) => void;
   setTranscribeLocale: (locale: string) => void;
+  setCoexistWithOtherApps: (on: boolean) => void;
   setActiveRecorder: (who: 'quick' | 'long' | null) => void;
   setKeepUnuploaded: (keep: boolean) => void;
   /** ★ を付け外しする。★ の付いた録音は自動削除されない */
@@ -104,6 +120,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [retentionDays, setRetentionDaysState] = useState<RetentionDays>(DEFAULT_RETENTION_DAYS);
   const [keepUnuploaded, setKeepUnuploadedState] = useState(true);
   const [transcribeLocale, setTranscribeLocaleState] = useState('ja-JP');
+  const [coexistWithOtherApps, setCoexistState] = useState(true);
   const [activeRecorder, setActiveRecorder] = useState<'quick' | 'long' | null>(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -152,6 +169,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       ]);
       const savedLocale = await AsyncStorage.getItem(TRANSCRIBE_LOCALE_KEY);
       if (savedLocale) setTranscribeLocaleState(savedLocale);
+      const savedCoexist = await AsyncStorage.getItem(COEXIST_KEY);
+      if (savedCoexist === 'false') setCoexistState(false);
       const days = Number(savedRetention);
       if ((RETENTION_CHOICES as readonly number[]).includes(days)) {
         setRetentionDaysState(days as RetentionDays);
@@ -186,14 +205,39 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     })();
   }, []);
 
-  // 起動時: 古い録音の自動削除 → 中断アップロードのリセット → 再送信
+  // 起動時: 落ちて残ったファイルの回収 → 自動削除 → 中断アップロードのリセット → 再送信
   useEffect(() => {
     if (loaded) {
-      runRetention()
+      recoverOrphans()
+        .then(() => runRetention())
         .then(() => resetStaleUploads())
         .then(() => doUploadPending());
     }
   }, [loaded]);
+
+  /**
+   * 録音中にアプリが落ちると、ファイルだけが残って一覧に出てこない。
+   * CAF は録音中でも中身が読めるので、起動時に拾い上げる。
+   */
+  const recoverOrphans = useCallback(async () => {
+    const found = await recoverOrphanRecordings(RECORDINGS_DIR, recordingsRef.current, () => {
+      const chars = 'abcdef0123456789';
+      let id = '';
+      for (let i = 0; i < 32; i++) {
+        id += chars[Math.floor(Math.random() * chars.length)];
+        if (i === 7 || i === 11 || i === 15 || i === 19) id += '-';
+      }
+      return id;
+    });
+    if (found.length === 0) return;
+    const next = [...found, ...recordingsRef.current];
+    recordingsRef.current = next;
+    setRecordings(next);
+    await saveRecordings(next);
+    const msg = `録音中に中断された${found.length}件を復元しました`;
+    addDebugLog(msg);
+    await log(msg);
+  }, [addDebugLog]);
 
   // URI修復: iOSコンテナUUID変更で保存済み絶対パスが無効になった場合に再構築
   async function repairRecordingUris(recs: RecordingEntry[]): Promise<RecordingEntry[]> {
@@ -479,6 +523,21 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(TRANSCRIBE_LOCALE_KEY, locale);
   }, []);
 
+  const setCoexistWithOtherApps = useCallback((on: boolean) => {
+    setCoexistState(on);
+    AsyncStorage.setItem(COEXIST_KEY, String(on));
+  }, []);
+
+  const recordingAudioMode = useMemo(() => ({
+    allowsRecording: true as const,
+    playsInSilentMode: true as const,
+    shouldPlayInBackground: true as const,
+    allowsBackgroundRecording: true as const,
+    // ⚠️ 既定（doNotMix）だと、他アプリが動画や音楽を再生した瞬間に録音が中断される。
+    //    mixWithOthers なら録り続けられる代わりに、スピーカーの音をマイクが拾う。
+    interruptionMode: (coexistWithOtherApps ? 'mixWithOthers' : 'doNotMix') as 'mixWithOthers' | 'doNotMix',
+  }), [coexistWithOtherApps]);
+
   const setKeepUnuploaded = useCallback((keep: boolean) => {
     setKeepUnuploadedState(keep);
     retentionRef.current.keepUnuploaded = keep;
@@ -530,6 +589,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         retentionDays,
         keepUnuploaded,
         transcribeLocale,
+        coexistWithOtherApps,
+        recordingAudioMode,
         activeRecorder,
         theme,
         updateSettings: updateSettingsHandler,
@@ -547,6 +608,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setRetentionDays,
         setKeepUnuploaded,
         setTranscribeLocale,
+        setCoexistWithOtherApps,
         setActiveRecorder,
         toggleProtected,
         runRetention,
