@@ -42,7 +42,8 @@ function generateFilename(ext: string): string {
 }
 
 export default function RecordScreen() {
-  const { theme, addRecording, uploadPending, recordingQuality, addDebugLog } = useApp();
+  const { theme, addRecording, uploadPending, recordingQuality, addDebugLog,
+          activeRecorder, setActiveRecorder } = useApp();
   const [isRecording, setIsRecording] = useState(false);
   const [useFallback, setUseFallback] = useState(false);
   const [hasPermission, setHasPermission] = useState<boolean | null>(null);
@@ -87,6 +88,11 @@ export default function RecordScreen() {
   };
 
   const startRecording = async () => {
+    // 録音機は1つしか動かせない。「切り出し」タブが使っていたら、黙って奪わない。
+    if (activeRecorder === 'long') {
+      Alert.alert('長い録音をしています', '「切り出し」タブで録音中です。先にそちらを停止してください。');
+      return;
+    }
     const permitted = await requestPermission();
     if (!permitted) return;
 
@@ -109,6 +115,7 @@ export default function RecordScreen() {
       await recorder.prepareToRecordAsync();
       recorder.record();
       setIsRecording(true);
+      setActiveRecorder('quick');
     } catch (err: any) {
       const errMsg = err?.message ?? String(err);
       addDebugLog(`Primary preset (${recordingQuality}) failed: ${errMsg}`);
@@ -124,6 +131,7 @@ export default function RecordScreen() {
         await fallbackRecorder.prepareToRecordAsync();
         fallbackRecorder.record();
         setIsRecording(true);
+        setActiveRecorder('quick');
         return;
       } catch (err2: any) {
         const err2Msg = err2?.message ?? String(err2);
@@ -146,6 +154,7 @@ export default function RecordScreen() {
       await rec.stop();
 
       setIsRecording(false);
+      setActiveRecorder(null);
 
       const finalState = rec.getStatus();
       const uri = finalState.url || state.url;
@@ -185,6 +194,8 @@ export default function RecordScreen() {
         mimeType: getMimeType(),
         uploadStatus: 'waiting' as const,
         createdAt: new Date().toISOString(),
+        kind: 'quick' as const,
+        startedAt: new Date(Date.now() - durationMs).toISOString(),
       };
 
       await addRecording(entry);
@@ -194,8 +205,10 @@ export default function RecordScreen() {
       console.error('stopRecording error:', err);
       Alert.alert('エラー', '録音の停止に失敗しました。\n' + (err?.message ?? ''));
       setIsRecording(false);
+      setActiveRecorder(null);
     }
-  }, [isRecording, useFallback, recorderState, fallbackState, recorder, fallbackRecorder, addRecording, uploadPending]);
+  }, [isRecording, useFallback, recorderState, fallbackState, recorder, fallbackRecorder,
+      addRecording, uploadPending, setActiveRecorder]);
 
   const handlePress = () => {
     if (isRecording) {

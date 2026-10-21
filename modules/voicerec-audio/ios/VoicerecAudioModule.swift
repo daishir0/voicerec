@@ -329,11 +329,17 @@ public class VoicerecAudioModule: Module {
     guard let track = tracks.first else {
       throw Exception(name: "NoAudioTrack", description: "音声トラックがありません: \(src.lastPathComponent)")
     }
-    let total = CMTimeGetSeconds(try await asset.load(.duration))
+    // ⚠️ **録音中のファイルは長さが 0 と返る**（CAF は読めるのに duration は未確定）。
+    //    ここで total で丸めると、呼び出し側が正しい範囲を渡しても「範囲が空」で弾いてしまう。
+    //    2026-10-21、録音中の切り出しが試せたはずなのに、この行のせいで検証が無効になった。
+    //    長さが分からないときは、頼まれた範囲をそのまま読みに行って、取れた分を返す。
+    let totalRaw = CMTimeGetSeconds(try await asset.load(.duration))
+    let total = totalRaw.isFinite && totalRaw > 0 ? totalRaw : 0
     let from = max(0, startSec)
-    let to = min(endSec > 0 ? endSec : total, total)
+    let to = total > 0 ? min(endSec > 0 ? endSec : total, total) : max(endSec, from)
     guard to > from else {
-      throw Exception(name: "EmptyRange", description: "範囲が空です (\(from) → \(to), 全体 \(total)秒)")
+      throw Exception(name: "EmptyRange",
+                      description: "範囲が空です (\(from) → \(to), 全体 \(total)秒)")
     }
 
     let reader = try AVAssetReader(asset: asset)
@@ -387,12 +393,15 @@ public class VoicerecAudioModule: Module {
                       description: writer.error?.localizedDescription ?? "書き出しが完了しませんでした")
     }
     let size = (try? FileManager.default.attributesOfItem(atPath: dst.path)[.size] as? NSNumber)??.intValue ?? 0
+    // 書けた実際の長さ。録音中のファイルからだと、頼んだ範囲より短くなることがある
+    let wrote = CMTimeGetSeconds(try await AVURLAsset(url: dst).load(.duration))
     return [
       "uri": dst.path,
       "fileSize": size,
       "startSec": from,
       "endSec": to,
-      "durationSec": to - from,
+      "durationSec": wrote.isFinite && wrote > 0 ? wrote : to - from,
+      "requestedSec": to - from,
       "elapsedMs": Int(Date().timeIntervalSince(began) * 1000)
     ]
   }

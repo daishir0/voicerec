@@ -161,7 +161,8 @@ export default function DiagnosticsScreen() {
     setBusy(true);
     try {
       const r = await VoicerecAudio.trimToWav(src, 0, 5, WORK_DIR + 'live.wav');
-      log(`🔴 録音中の切り出し: 成功 ${r.durationSec.toFixed(1)}秒 → ${(r.fileSize / 1024).toFixed(0)}KB / ${r.elapsedMs}ms`);
+      log(`🔴 録音中の切り出し: 成功 要求${(r.requestedSec ?? 0).toFixed(1)}秒 → ` +
+          `実際${r.durationSec.toFixed(1)}秒 ${(r.fileSize / 1024).toFixed(0)}KB / ${r.elapsedMs}ms`);
     } catch (e: any) {
       log(`🔴 録音中の切り出し: 失敗 ${e?.message ?? e}`);
     } finally {

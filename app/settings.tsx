@@ -17,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
 import { useApp } from '@/contexts/AppContext';
 import { testConnection } from '@/services/upload-service';
+import { TRANSCRIBE_LOCALES } from '@/services/clip-service';
 import {
   formatBytes,
   retentionLabel,
@@ -43,6 +44,8 @@ export default function SettingsScreen() {
     setRetentionDays,
     keepUnuploaded,
     setKeepUnuploaded,
+    transcribeLocale,
+    setTranscribeLocale,
   } = useApp();
   const router = useRouter();
 
@@ -191,6 +194,35 @@ export default function SettingsScreen() {
               }}
               trackColor={{ false: theme.bgTertiary, true: theme.accent }}
             />
+          </View>
+        </View>
+
+        {/* 文字起こしセクション */}
+        <View style={[styles.debugSection, { borderTopColor: theme.border }]}>
+          <View style={{ paddingRight: 12 }}>
+            <Text style={[styles.label, { color: theme.textSecondary, marginTop: 0 }]}>
+              文字起こしの言語
+            </Text>
+            <Text style={[styles.qualityHint, { color: theme.textSecondary }]}>
+              「切り出し」タブで端末内の文字起こしに使う言語です
+            </Text>
+          </View>
+          <View style={styles.retentionRow}>
+            {TRANSCRIBE_LOCALES.map((l) => {
+              const on = transcribeLocale === l.id;
+              return (
+                <Pressable
+                  key={l.id}
+                  onPress={() => setTranscribeLocale(l.id)}
+                  style={[styles.retentionChip, {
+                    backgroundColor: on ? theme.accent : theme.bgSecondary,
+                    borderColor: on ? theme.accent : theme.border,
+                  }]}
+                >
+                  <Text style={{ color: on ? '#fff' : theme.text, fontSize: 13 }}>{l.label}</Text>
+                </Pressable>
+              );
+            })}
           </View>
         </View>
 

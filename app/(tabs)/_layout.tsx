@@ -30,6 +30,15 @@ export default function TabLayout() {
         }}
       />
       <Tabs.Screen
+        name="clip"
+        options={{
+          title: '切り出し',
+          tabBarIcon: ({ color, size }) => (
+            <Ionicons name="cut" size={size} color={color} />
+          ),
+        }}
+      />
+      <Tabs.Screen
         name="recordings"
         options={{
           title: '録音一覧',

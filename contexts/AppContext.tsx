@@ -27,6 +27,7 @@ const RECORDING_QUALITY_KEY = 'rec18082_recordingQuality';
 const NOTIFICATIONS_ENABLED_KEY = 'rec18082_notificationsEnabled';
 const RETENTION_DAYS_KEY = 'rec18082_retentionDays';
 const KEEP_UNUPLOADED_KEY = 'rec18082_keepUnuploaded';
+const TRANSCRIBE_LOCALE_KEY = 'rec18082_transcribeLocale';
 const RECORDINGS_DIR = FileSystem.documentDirectory + 'recordings/';
 
 interface Theme {
@@ -52,6 +53,10 @@ interface AppContextType {
   retentionDays: RetentionDays;
   /** 未アップロードのものを自動削除から守るか */
   keepUnuploaded: boolean;
+  /** 端末内の文字起こしに使う言語 */
+  transcribeLocale: string;
+  /** いまどちらのタブが録音しているか。録音機は1つしか動かせない */
+  activeRecorder: 'quick' | 'long' | null;
   theme: Theme;
   updateSettings: (settings: ServerSettings) => Promise<void>;
   addRecording: (recording: RecordingEntry) => Promise<void>;
@@ -66,6 +71,8 @@ interface AppContextType {
   setRecordingQuality: (quality: RecordingQuality) => void;
   setNotificationsEnabled: (enabled: boolean) => Promise<boolean>;
   setRetentionDays: (days: RetentionDays) => void;
+  setTranscribeLocale: (locale: string) => void;
+  setActiveRecorder: (who: 'quick' | 'long' | null) => void;
   setKeepUnuploaded: (keep: boolean) => void;
   /** ★ を付け外しする。★ の付いた録音は自動削除されない */
   toggleProtected: (id: string) => Promise<void>;
@@ -96,6 +103,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [notificationsEnabled, setNotificationsEnabledState] = useState(false);
   const [retentionDays, setRetentionDaysState] = useState<RetentionDays>(DEFAULT_RETENTION_DAYS);
   const [keepUnuploaded, setKeepUnuploadedState] = useState(true);
+  const [transcribeLocale, setTranscribeLocaleState] = useState('ja-JP');
+  const [activeRecorder, setActiveRecorder] = useState<'quick' | 'long' | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   // Refs で常に最新の値を参照できるようにする
@@ -141,6 +150,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         AsyncStorage.getItem(RETENTION_DAYS_KEY),
         AsyncStorage.getItem(KEEP_UNUPLOADED_KEY),
       ]);
+      const savedLocale = await AsyncStorage.getItem(TRANSCRIBE_LOCALE_KEY);
+      if (savedLocale) setTranscribeLocaleState(savedLocale);
       const days = Number(savedRetention);
       if ((RETENTION_CHOICES as readonly number[]).includes(days)) {
         setRetentionDaysState(days as RetentionDays);
@@ -463,6 +474,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(RETENTION_DAYS_KEY, String(days));
   }, []);
 
+  const setTranscribeLocale = useCallback((locale: string) => {
+    setTranscribeLocaleState(locale);
+    AsyncStorage.setItem(TRANSCRIBE_LOCALE_KEY, locale);
+  }, []);
+
   const setKeepUnuploaded = useCallback((keep: boolean) => {
     setKeepUnuploadedState(keep);
     retentionRef.current.keepUnuploaded = keep;
@@ -513,6 +529,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         notificationsEnabled,
         retentionDays,
         keepUnuploaded,
+        transcribeLocale,
+        activeRecorder,
         theme,
         updateSettings: updateSettingsHandler,
         addRecording,
@@ -528,6 +546,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setNotificationsEnabled,
         setRetentionDays,
         setKeepUnuploaded,
+        setTranscribeLocale,
+        setActiveRecorder,
         toggleProtected,
         runRetention,
       }}

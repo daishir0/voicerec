@@ -41,7 +41,10 @@ export type TrimResult = {
   fileSize: number;
   startSec: number;
   endSec: number;
+  /** 実際に書けた長さ。録音中のファイルからだと頼んだ範囲より短いことがある */
   durationSec: number;
+  /** 頼んだ範囲の長さ */
+  requestedSec?: number;
   elapsedMs: number;
 };
 
