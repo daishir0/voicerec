@@ -86,12 +86,18 @@ export default function ClipScreen() {
     [longRecordings, sourceId],
   );
 
-  // 再生して確かめる。範囲の端だけ聴ければ、たいていの確認は足りる。
-  const playSource = useMemo(() => (source ? { uri: source.uri } : undefined), [source?.uri]);
-  const player = useAudioPlayer(playSource, { updateInterval: 150 });
+  // 再生して確かめる。
+  //
+  // ⚠️ **プレイヤーは音を出すときまで作らない。** 既定の expo-audio は
+  //    「一時停止・再生終了・解放」のたびに iOS の音声セッションを落とす
+  //    (keepAudioSessionActive: false)。録音の直前に止めると録音が始められなくなり、
+  //    録音中に選択中の録音が変わるとセッションごと落ちる（2026-10-21 に踏んだ）。
+  //    音源を渡さずに作り、鳴らすときだけ replace する。
+  const player = useAudioPlayer(undefined, { updateInterval: 150, keepAudioSessionActive: true });
   const playerStatus = useAudioPlayerStatus(player);
   const [playing, setPlaying] = useState<PlayTarget | null>(null);
   const stopAtRef = useRef<number | null>(null);
+  const loadedUriRef = useRef<string | null>(null);
 
 
   // 中断と経路変更を見張る。録り直しは下で定義する関数に任せる（ref 経由）。
@@ -176,33 +182,50 @@ export default function ClipScreen() {
   const stopPlay = useCallback(() => {
     stopAtRef.current = null;
     setPlaying(null);
+    // 鳴っていないのに pause を呼ばない（呼ぶだけでセッションに触る）
+    if (!loadedUriRef.current) return;
     try { player.pause(); } catch { /* 解放済みなら何もしない */ }
   }, [player]);
 
   const startPlay = useCallback(async (req: PlayRequest) => {
     if (!source) return;
-    // 録音用のモードのままだと受話口から鳴る。再生の前に切り替える。
-    await setAudioModeAsync({ allowsRecording: false, playsInSilentMode: true });
-    // toSec が null なら、止めるまで鳴らす（端の確認は人によって聴きたい長さが違う）
-    stopAtRef.current = req.toSec;
-    setPlaying(req.what);
     try {
+      // 録音用のモードのままだと受話口から鳴る。再生の前に切り替える。
+      await setAudioModeAsync({
+        allowsRecording: false, playsInSilentMode: true, interruptionMode: 'mixWithOthers',
+      });
+      if (loadedUriRef.current !== source.uri) {
+        player.replace({ uri: source.uri });
+        loadedUriRef.current = source.uri;
+        // replace の直後は読み込みが終わっていない。少しだけ待つ
+        for (let i = 0; i < 30 && !player.isLoaded; i++) {
+          await new Promise(r => setTimeout(r, 50));
+        }
+      }
+      // toSec が null なら、止めるまで鳴らす（端の確認は人によって聴きたい長さが違う）
+      stopAtRef.current = req.toSec;
+      setPlaying(req.what);
       await player.seekTo(req.fromSec);
       player.play();
+      addDebugLog(`再生 ${req.fromSec.toFixed(1)}秒から` +
+        `${req.toSec != null ? ` ${req.toSec.toFixed(1)}秒まで` : '（停止するまで）'}` +
+        ` loaded=${player.isLoaded} dur=${player.duration?.toFixed?.(1) ?? '?'}`);
     } catch (e: any) {
       stopPlay();
+      addDebugLog(`再生に失敗: ${e?.message ?? e}`);
       Alert.alert('再生できませんでした', e?.message ?? String(e));
     }
-  }, [source, player, stopPlay]);
+  }, [source, player, stopPlay, addDebugLog]);
 
   // 範囲の終わりまで来たら止める
   useEffect(() => {
-    if (playing == null || stopAtRef.current == null) return;
-    if (playerStatus.currentTime >= stopAtRef.current) stopPlay();
-    else if (playerStatus.didJustFinish) stopPlay();
+    if (playing == null) return;
+    // 端からの再生（stopAt が null）でも、ファイルの終わりまで来たら止める
+    if (playerStatus.didJustFinish) { stopPlay(); return; }
+    if (stopAtRef.current != null && playerStatus.currentTime >= stopAtRef.current) stopPlay();
   }, [playing, playerStatus.currentTime, playerStatus.didJustFinish, stopPlay]);
 
-  // 選ぶ録音を変えたら再生は止める
+  // 選ぶ録音を変えたら再生は止める（音源の読み直しは次に鳴らすときでよい）
   useEffect(() => { stopPlay(); }, [source?.id, stopPlay]);
 
   const startRecording = useCallback(async () => {
@@ -213,6 +236,7 @@ export default function ClipScreen() {
     stopPlay();
     const { status } = await requestRecordingPermissionsAsync();
     if (status !== 'granted') {
+      addDebugLog(`録音開始を中止: マイク権限 ${status}`);
       Alert.alert('マイク権限', 'マイクへのアクセスを許可してください。');
       return;
     }
@@ -241,9 +265,12 @@ export default function ClipScreen() {
     } catch (err: any) {
       startedAtRef.current = null;
       writerRef.current = null;
-      Alert.alert('エラー', '録音を開始できませんでした。\n' + (err?.message ?? ''));
+      const msg = err?.message ?? String(err);
+      addDebugLog(`録音を開始できませんでした: ${msg}`);
+      void log(`startRecording failed: ${msg}\n${err?.stack ?? ''}`);
+      Alert.alert('エラー', '録音を開始できませんでした。\n' + msg);
     }
-  }, [recorder, activeRecorder, setActiveRecorder, stopPlay]);
+  }, [recorder, activeRecorder, setActiveRecorder, stopPlay, addDebugLog]);
 
   /** いま録っているものを確定して保存する。返り値がその録音。 */
   const finalizeRecording = useCallback(async (): Promise<RecordingEntry | null> => {
@@ -531,6 +558,21 @@ export default function ClipScreen() {
             </Pressable>
           </View>
 
+          {playing && (
+            <View style={[styles.playingRow, { backgroundColor: theme.accent }]}>
+              <Ionicons name="volume-high" size={16} color="#fff" />
+              <Text style={{ color: '#fff', fontSize: 13, flex: 1 }}>
+                再生中 {formatDuration(Math.max(0, playerStatus.currentTime - range.startSec))}
+                {stopAtRef.current != null
+                  ? ` / ${formatDuration(range.endSec - range.startSec)}`
+                  : '（押すと停止）'}
+              </Text>
+              <Pressable onPress={stopPlay} hitSlop={10}>
+                <Ionicons name="stop-circle" size={22} color="#fff" />
+              </Pressable>
+            </View>
+          )}
+
           {busy && (
             <View style={styles.busyRow}>
               <ActivityIndicator color={theme.accent} />
@@ -646,6 +688,10 @@ const styles = StyleSheet.create({
   action: { flex: 1, alignItems: 'center', gap: 4, paddingVertical: 16, borderRadius: 12 },
   actionLabel: { fontSize: 13, fontWeight: '600' },
   actionHint: { fontSize: 10 },
+  playingRow: {
+    flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 12, paddingVertical: 10, borderRadius: 10,
+  },
   busyRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 8 },
   transcriptHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   transcript: { fontSize: 14, lineHeight: 22 },
