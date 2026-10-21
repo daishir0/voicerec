@@ -1,3 +1,4 @@
+import React, { useEffect, useRef } from 'react';
 import { Tabs, useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { Pressable } from 'react-native';
@@ -9,16 +10,22 @@ export default function TabLayout() {
   const router = useRouter();
   const tint = Colors[isDarkMode ? 'dark' : 'light'].tint;
 
-  // ⚠️ initialRouteName は**最初に組み立てたときの値しか見ない**。設定は AsyncStorage から
-  //    非同期に読むので、読み終える前に組むと必ず既定の「録音」で固まる。
-  //    読み終えるまで出さず、startTab を key にして、設定を変えたらその場で組み直す。
+  // ⚠️ **`<Tabs initialRouteName=…>` は効かない。** expo-router は経路表を
+  //    `unstable_settings`（静的なエクスポート）から組み立てるので、プロップに渡しても
+  //    無視される。設定で選ばせる以上、読み終えてから自分で移動するしかない。
+  //    2026-10-21、プロップで効くと思い込み、同じ画面の写真を3回撮った。
+  const jumped = useRef(false);
+  useEffect(() => {
+    if (!settingsLoaded || jumped.current) return;
+    jumped.current = true;
+    if (startTab !== 'index') router.replace(`/${startTab}`);
+  }, [settingsLoaded, startTab, router]);
+
+  // 読み終える前に出すと「録音」が一瞬見えてから飛ぶので、それまで出さない
   if (!settingsLoaded) return null;
 
   return (
     <Tabs
-      key={startTab}
-      // 起動時にどのタブを開くか。切り出しを主に使う人は、ここを変えると1タップ減る
-      initialRouteName={startTab}
       screenOptions={{
         tabBarActiveTintColor: tint,
         headerRight: () => (
