@@ -192,6 +192,15 @@ export default function SettingsScreen() {
               trackColor={{ false: theme.bgTertiary, true: theme.accent }}
             />
           </View>
+          {isDebugMode && (
+            <Pressable
+              onPress={() => router.push('/diagnostics')}
+              style={[styles.diagRow, { borderColor: theme.border }]}
+            >
+              <Text style={{ color: theme.accent, fontSize: 14 }}>検証画面を開く</Text>
+              <Ionicons name="chevron-forward" size={18} color={theme.textSecondary} />
+            </Pressable>
+          )}
         </View>
 
         {isDebugMode && (
@@ -238,6 +247,14 @@ export default function SettingsScreen() {
 }
 
 const styles = StyleSheet.create({
+  diagRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    paddingVertical: 14,
+    marginTop: 8,
+    borderTopWidth: StyleSheet.hairlineWidth,
+  },
   header: {
     flexDirection: 'row',
     alignItems: 'center',

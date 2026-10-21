@@ -68,3 +68,18 @@ export function getFileExtension(): string {
 export function getMimeType(): string {
   return 'audio/mp4';
 }
+
+// ── 長時間録音の検証用プリセット（2026-10-21 追加）──────────────────────
+// m4a は停止時にしか索引(moov)を書かないため、録音中は読めず、クラッシュすると
+// ファイルごと失われる。CAF は索引を後置しないので、録音中でも読めるはず。
+// 「範囲を選んで切り出す」には録音を止めずに読めることが前提になる。
+// 中身の AAC は同じなので容量は変わらない（約120KB/分）。
+export const CAF_PRESET: RecordingOptions = {
+  ...WHISPER_PRESET,
+  extension: '.caf',
+};
+
+export const CAF_HIGH_QUALITY_PRESET: RecordingOptions = {
+  ...WHISPER_HIGH_QUALITY_PRESET,
+  extension: '.caf',
+};
