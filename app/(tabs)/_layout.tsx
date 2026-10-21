@@ -5,12 +5,18 @@ import { Colors } from '@/constants/theme';
 import { useApp } from '@/contexts/AppContext';
 
 export default function TabLayout() {
-  const { isDarkMode, startTab } = useApp();
+  const { isDarkMode, startTab, settingsLoaded } = useApp();
   const router = useRouter();
   const tint = Colors[isDarkMode ? 'dark' : 'light'].tint;
 
+  // ⚠️ initialRouteName は**最初に組み立てたときの値しか見ない**。設定は AsyncStorage から
+  //    非同期に読むので、読み終える前に組むと必ず既定の「録音」で固まる。
+  //    読み終えるまで出さず、startTab を key にして、設定を変えたらその場で組み直す。
+  if (!settingsLoaded) return null;
+
   return (
     <Tabs
+      key={startTab}
       // 起動時にどのタブを開くか。切り出しを主に使う人は、ここを変えると1タップ減る
       initialRouteName={startTab}
       screenOptions={{

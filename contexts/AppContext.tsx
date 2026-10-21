@@ -75,6 +75,8 @@ interface AppContextType {
   activeRecorder: 'quick' | 'long' | null;
   /** 起動したときに開くタブ */
   startTab: 'index' | 'clip' | 'recordings';
+  /** 保存してある設定を読み終えたか。読む前に画面を組むと既定値で固まる項目がある */
+  settingsLoaded: boolean;
   theme: Theme;
   updateSettings: (settings: ServerSettings) => Promise<void>;
   addRecording: (recording: RecordingEntry) => Promise<void>;
@@ -607,6 +609,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         recordingAudioMode,
         activeRecorder,
         startTab,
+        settingsLoaded: loaded,
         theme,
         updateSettings: updateSettingsHandler,
         addRecording,
