@@ -92,8 +92,12 @@ export async function createClipForUpload(
 }
 
 /**
- * 範囲を端末内で文字起こしする。WAV に切ってから渡す
- * （どちらのエンジンも 16kHz モノラルを好み、SFSpeech は WAV か MP3 しか受けない）。
+ * 範囲を端末内で文字起こしする。
+ *
+ * ⚠️ **中間ファイルは m4a にする。** 以前は 16kHz/16bit の WAV に展開していたが、
+ *    1時間19分で 145MB になり、書き出しに失敗していた（2026-10-23）。
+ *    同じ内容が m4a なら 18MB。SpeechAnalyzer は AVAudioFile 経由で m4a を読めるし、
+ *    SFSpeech に落ちる場合もネイティブ側が55秒ずつ WAV に割り直すので支障はない。
  */
 export async function transcribeRange(
   session: Session,
@@ -102,17 +106,17 @@ export async function transcribeRange(
   engine: 'auto' | 'analyzer' | 'sf' = 'auto',
 ): Promise<TranscribeResult> {
   await ensureDir();
-  const wav = CLIPS_DIR + `tmp-${Date.now()}.wav`;
+  const tmp = CLIPS_DIR + `tmp-${Date.now()}.m4a`;
   try {
     const pieces = piecesForRange(session, range.startSec, range.endSec);
     if (pieces.length === 0) throw new Error('選んだ範囲に音がありません');
-    await VoicerecAudio.clipRangesToWav(
-      pieces.map(p => p.uri), pieces.map(p => p.startSec), pieces.map(p => p.endSec), wav);
-    return await VoicerecAudio.transcribe(wav, locale, engine);
+    const cut = await VoicerecAudio.clipRangesToM4a(
+      pieces.map(p => p.uri), pieces.map(p => p.startSec), pieces.map(p => p.endSec), tmp);
+    if (!cut.fileSize) throw new Error('切り出した音声が空でした');
+    return await VoicerecAudio.transcribe(tmp, locale, engine);
   } finally {
-    // 文字起こし用の WAV は残さない（16kHz/16bit で1分あたり約2MB ある）
     try {
-      await FileSystem.deleteAsync(wav, { idempotent: true });
+      await FileSystem.deleteAsync(tmp, { idempotent: true });
     } catch {
       // 消せなくても致命的ではない
     }

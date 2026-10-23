@@ -32,6 +32,7 @@ const TRANSCRIBE_LOCALE_KEY = 'rec18082_transcribeLocale';
 const COEXIST_KEY = 'rec18082_coexistWithOtherApps';
 const START_TAB_KEY = 'rec18082_startTab';
 const RECORDINGS_DIR = FileSystem.documentDirectory + 'recordings/';
+const LEVELS_DIR = FileSystem.documentDirectory + 'levels/';
 
 interface Theme {
   bg: string;
@@ -273,7 +274,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             await log(`URI repaired: ${rec.uri} → ${newUri}`);
             addDebugLog(`URI修復: ${filename}`);
             changed = true;
-            return { ...rec, uri: newUri };
+            // ⚠️ **波形のファイルも一緒に直す。** 音声だけ直して波形を放置していたため、
+            //    アプリを入れ直したあと（コンテナのUUIDが変わったあと）、
+            //    波形が出なくなっていた（2026-10-23 のログで判明）。
+            const lvName = rec.levelsUri?.split('/').pop();
+            const newLevels = lvName ? LEVELS_DIR + lvName : undefined;
+            return { ...rec, uri: newUri, ...(newLevels ? { levelsUri: newLevels } : {}) };
           }
         } catch {}
 

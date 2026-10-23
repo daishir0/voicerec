@@ -501,11 +501,16 @@ export default function ClipScreen() {
         Alert.alert('文字起こし', '音声から文字を取り出せませんでした。');
       }
     } catch (e: any) {
-      Alert.alert('文字起こしに失敗しました', e?.message ?? String(e));
+      // ⚠️ アラートは閉じると消える。あとから原因を追えるようにログにも残す
+      const msg = e?.message ?? String(e);
+      addDebugLog(`文字起こしに失敗: ${msg}`);
+      void log(`transcribe failed: ${msg}\n range=${range.startSec}-${range.endSec}\n` +
+        `parts=${source.parts.map(p => `${p.rec.filename}@${p.offsetSec}+${p.durationSec}`).join(' / ')}`);
+      Alert.alert('文字起こしに失敗しました', msg);
     } finally {
       setBusy(null);
     }
-  }, [source, range, transcribeLocale, updateRecording]);
+  }, [source, range, transcribeLocale, updateRecording, addDebugLog]);
 
   /** 文字起こしの結果を消す。録音に保存した分も一緒に消す */
   const clearTranscript = useCallback(async () => {
@@ -524,11 +529,13 @@ export default function ClipScreen() {
         `${clip.displayName}（${formatDuration(clip.duration / 1000)} / ${formatBytes(clip.fileSize)}）\n` +
         'サーバー側で文字起こしされます。');
     } catch (e: any) {
-      Alert.alert('切り出しに失敗しました', e?.message ?? String(e));
+      const msg = e?.message ?? String(e);
+      addDebugLog(`切り出しに失敗: ${msg}`);
+      Alert.alert('切り出しに失敗しました', msg);
     } finally {
       setBusy(null);
     }
-  }, [source, range, addRecording, uploadPending]);
+  }, [source, range, addRecording, uploadPending, addDebugLog]);
 
   // ⚠️ プレイヤーの currentTime は**いま鳴らしているファイルの中の位置**。
   //    セッションは複数ファイルに分かれうるので、全体の時間に直さないと巻き戻って見える。

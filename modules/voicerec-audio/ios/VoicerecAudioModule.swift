@@ -143,10 +143,11 @@ public class VoicerecAudioModule: Module {
                   "elapsedMs": Int(Date().timeIntervalSince(began) * 1000)]
         } catch {
           if engine == "analyzer" { throw error }
-          // 自動なら黙って旧APIに落ちる。理由は返して分かるようにしておく
+          // 自動なら旧APIに落ちる。落ちた理由は必ず返す（黙って落ちると原因が消える）
+          let why = Self.describe(error, where: "SpeechAnalyzer")
           let (text, chunks) = try await Self.transcribeWithSF(url: url, locale: loc)
           return ["text": text, "engine": "sf", "chunks": chunks,
-                  "fallbackReason": error.localizedDescription,
+                  "fallbackReason": why,
                   "elapsedMs": Int(Date().timeIntervalSince(began) * 1000)]
         }
       }
@@ -286,6 +287,16 @@ public class VoicerecAudioModule: Module {
     let bytes = [UInt8((id >> 24) & 0xFF), UInt8((id >> 16) & 0xFF),
                  UInt8((id >> 8) & 0xFF), UInt8(id & 0xFF)]
     return String(bytes: bytes, encoding: .ascii) ?? "?"
+  }
+
+  /// エラーを追える文言にする。NSError の domain と code まで出す。
+  private static func describe(_ error: Error?, where what: String) -> String {
+    guard let e = error as NSError? else { return "\(what)に失敗しました（詳細不明）" }
+    var s = "\(what)に失敗: \(e.localizedDescription) [\(e.domain) \(e.code)]"
+    if let under = e.userInfo[NSUnderlyingErrorKey] as? NSError {
+      s += " ← \(under.localizedDescription) [\(under.domain) \(under.code)]"
+    }
+    return s
   }
 
   private static func isBluetooth(_ type: AVAudioSession.Port?) -> Bool {
@@ -518,13 +529,11 @@ public class VoicerecAudioModule: Module {
     writer.add(input)
 
     guard writer.startWriting() else {
-      throw Exception(name: "WriterFailed",
-                      description: writer.error?.localizedDescription ?? "startWriting に失敗")
+      throw Exception(name: "WriterFailed", description: Self.describe(writer.error, where: "書き出しの開始"))
     }
     writer.startSession(atSourceTime: .zero)
     guard reader.startReading() else {
-      throw Exception(name: "ReaderFailed",
-                      description: reader.error?.localizedDescription ?? "startReading に失敗")
+      throw Exception(name: "ReaderFailed", description: Self.describe(reader.error, where: "読み出しの開始"))
     }
 
     let queue = DispatchQueue(label: "jp.path-finder.voicerec.transcode")
@@ -547,8 +556,10 @@ public class VoicerecAudioModule: Module {
     }
 
     if writer.status != .completed {
-      throw Exception(name: "TranscodeFailed",
-                      description: writer.error?.localizedDescription ?? "書き出しが完了しませんでした")
+      // ⚠️ localizedDescription だけだと "The operation could not be completed" にしかならず、
+      //    何が起きたのか分からない（2026-10-23、1時間19分の切り出しで実際にそうなった）。
+      //    どこで何番のエラーかを必ず載せる。
+      throw Exception(name: "TranscodeFailed", description: Self.describe(writer.error, where: "書き出し"))
     }
     let size = (try? FileManager.default.attributesOfItem(atPath: dst.path)[.size] as? NSNumber)??.intValue ?? 0
     // 書けた実際の長さ。録音中のファイルからだと、頼んだ範囲より短くなることがある
