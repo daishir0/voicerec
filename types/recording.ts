@@ -42,9 +42,6 @@ export interface RecordingEntry {
    * この仕組みより前の録音には無いので、その場合は時刻の連続性で判断する。
    */
   sessionId?: string;
-  /** true なら自動削除の対象から外す */
-  protected?: boolean;
-
   /**
    * 端末内で文字起こしした結果。画面を離れても消えないように録音に持たせる。
    * 範囲を選び直したら作り直す。

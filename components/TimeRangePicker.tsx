@@ -24,7 +24,7 @@ type Theme = {
 const WAVE_H = 72;
 const HANDLE_W = 36;
 const ITEM_H = 38;
-const VISIBLE = 5;
+const VISIBLE = 3;   // 上下1つずつ見えれば回せる。5段は場所を取りすぎる
 const WHEEL_H = ITEM_H * VISIBLE;
 
 function two(n: number): string {
@@ -257,27 +257,6 @@ export default function TimeRangePicker({
     </View>
   ), [bars, theme.bgTertiary]);
 
-  const PlayBtn = ({ what, label, req }: { what: PlayTarget; label: string; req: PlayRequest }) => {
-    const on = playing === what;
-    const disabled = playDisabled;
-    return (
-      <Pressable
-        onPress={() => (on ? onStop?.() : onPlay?.(req))}
-        disabled={disabled}
-        style={[styles.playBtn, {
-          backgroundColor: on ? theme.accent : theme.bgSecondary,
-          borderColor: on ? theme.accent : theme.border,
-          opacity: disabled ? 0.4 : 1,
-        }]}
-      >
-        <Ionicons name={on ? 'stop' : 'play'} size={14} color={on ? '#fff' : theme.accent} />
-        <Text style={{ color: on ? '#fff' : theme.text, fontSize: 12 }}>
-          {on ? '停止' : label}
-        </Text>
-      </Pressable>
-    );
-  };
-
   return (
     <View>
       {/* いま選んでいる範囲 */}
@@ -326,14 +305,14 @@ export default function TimeRangePicker({
           </>
         )}
       </View>
-      <Text style={[styles.hint, { color: theme.textSecondary, marginTop: 4 }]}>
-        波形の両端をドラッグしても選べます
-      </Text>
 
-      {/* どちらの端を動かすか */}
+      {/* どちらの端を動かすか。その端を聴くボタンも同じ場所に置く
+          （「どちらの端か」と「その端を聴く」は同じ関心事） */}
       <View style={[styles.segment, { borderColor: theme.border }]}>
         {(['start', 'end'] as const).map(e => {
           const on = edge === e;
+          const sec = e === 'start' ? shown.startSec : shown.endSec;
+          const sounding = playing === e;
           return (
             <Pressable
               key={e}
@@ -343,6 +322,18 @@ export default function TimeRangePicker({
               <Text style={{ color: on ? '#fff' : theme.text, fontSize: 14, fontWeight: '600' }}>
                 {e === 'start' ? '開始' : '終了'}
               </Text>
+              <Pressable
+                onPress={() => (sounding ? onStop?.() : onPlay?.({ what: e, fromSec: sec, toSec: null }))}
+                disabled={playDisabled}
+                hitSlop={10}
+                style={{ opacity: playDisabled ? 0.35 : 1 }}
+              >
+                <Ionicons
+                  name={sounding ? 'stop-circle' : 'play-circle'}
+                  size={22}
+                  color={on ? '#fff' : theme.accent}
+                />
+              </Pressable>
             </Pressable>
           );
         })}
@@ -359,23 +350,12 @@ export default function TimeRangePicker({
         <Wheel values={seconds} value={at.getSeconds()} onChange={v => setPart('s', v)} theme={theme} suffix="秒" />
       </View>
 
-      {/* 端から鳴らして確かめる。どちらも**止めるまで鳴り続ける** */}
-      <View style={styles.playRow}>
-        <PlayBtn
-          what="start" label="開始位置から再生"
-          req={{ what: 'start', fromSec: value.startSec, toSec: null }}
-        />
-        <PlayBtn
-          what="end" label="終了位置から再生"
-          req={{ what: 'end', fromSec: value.endSec, toSec: null }}
-        />
-      </View>
     </View>
   );
 }
 
 const styles = StyleSheet.create({
-  summary: { alignItems: 'center', marginBottom: 10 },
+  summary: { alignItems: 'center', marginBottom: 8 },
   range: { fontSize: 22, fontWeight: '500', fontVariant: ['tabular-nums'] },
   hint: { fontSize: 12, textAlign: 'center', marginTop: 2 },
   wave: {
@@ -394,21 +374,19 @@ const styles = StyleSheet.create({
     borderLeftWidth: 2, borderRightWidth: 2,
   },
   segment: {
-    flexDirection: 'row', marginTop: 14, borderRadius: 10,
+    flexDirection: 'row', marginTop: 10, borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden',
   },
-  segmentItem: { flex: 1, alignItems: 'center', paddingVertical: 9 },
+  segmentItem: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center',
+    gap: 8, paddingVertical: 8,
+  },
   wheels: {
-    flexDirection: 'row', marginTop: 10, height: WHEEL_H,
+    flexDirection: 'row', marginTop: 8, height: WHEEL_H,
     borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden',
   },
   selectionBand: { position: 'absolute', left: 0, right: 0, height: ITEM_H, borderRadius: 8 },
   item: { height: ITEM_H, alignItems: 'center', justifyContent: 'center' },
   itemText: { fontVariant: ['tabular-nums'] },
   suffix: { position: 'absolute', right: 6, top: WHEEL_H / 2 - 9, fontSize: 12 },
-  playRow: { flexDirection: 'row', gap: 8, marginTop: 14 },
-  playBtn: {
-    flex: 1, flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 5,
-    paddingVertical: 9, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth,
-  },
 });

@@ -68,7 +68,7 @@ function stamp(d: Date): string {
 
 export default function ClipScreen() {
   const {
-    theme, recordings, addRecording, updateRecording, deleteRecording, toggleProtected, uploadPending,
+    theme, recordings, addRecording, updateRecording, deleteRecording, uploadPending,
     recordingQuality, transcribeLocale, activeRecorder, setActiveRecorder, addDebugLog,
     runRetention, coexistWithOtherApps, recordingAudioMode,
   } = useApp();
@@ -551,17 +551,22 @@ export default function ClipScreen() {
         style={[styles.recordBtn, {
           backgroundColor: state.isRecording ? theme.red : theme.bgSecondary,
           borderColor: state.isRecording ? theme.red : theme.border,
+          // 録音が既にあるときは、このボタンは主役ではないので小さくする
+          paddingVertical: state.isRecording || !source ? 18 : 12,
         }]}
       >
         <Ionicons
           name={state.isRecording ? 'stop' : 'mic'}
-          size={22}
+          size={state.isRecording || !source ? 22 : 18}
           color={state.isRecording ? '#fff' : theme.accent}
         />
-        <Text style={[styles.recordLabel, { color: state.isRecording ? '#fff' : theme.text }]}>
+        <Text style={[styles.recordLabel, {
+          color: state.isRecording ? '#fff' : theme.text,
+          fontSize: state.isRecording || !source ? 15 : 14,
+        }]}>
           {state.isRecording
             ? `録音中 ${formatDuration(elapsed)} ・ タップで停止`
-            : '録音を始める（止めるまで録り続けます）'}
+            : source ? '録音を始める' : '録音を始める（止めるまで録り続けます）'}
         </Text>
       </Pressable>
 
@@ -598,7 +603,7 @@ export default function ClipScreen() {
         </>
       )}
 
-      {!state.isRecording && (
+      {!state.isRecording && !source && (
         <Text style={[styles.lead, { color: theme.textSecondary }]}>
           録って、あとから必要な範囲だけを文字起こし・送信します
         </Text>
@@ -638,26 +643,10 @@ export default function ClipScreen() {
                   <Ionicons name="chevron-down" size={16} color={theme.accent} />
                 )}
               </Pressable>
-              <Pressable
-                onPress={() => source.parts.forEach(p => toggleProtected(p.rec.id))}
-                hitSlop={10}
-                style={styles.iconBtn}
-              >
-                <Ionicons
-                  name={source.protected ? 'star' : 'star-outline'}
-                  size={18}
-                  color={source.protected ? theme.accent : theme.textSecondary}
-                />
-              </Pressable>
               <Pressable onPress={doDelete} hitSlop={10} style={styles.iconBtn}>
                 <Ionicons name="trash-outline" size={18} color={theme.red} />
               </Pressable>
             </View>
-            {source.protected && (
-              <Text style={[styles.cardTitle, { color: theme.textSecondary }]}>
-                ★ 自動削除の対象から外しています
-              </Text>
-            )}
             <TimeRangePicker
               levels={levels}
               startedAt={source.startedAt}
@@ -765,7 +754,6 @@ export default function ClipScreen() {
                     <Text style={{ color: theme.text, fontSize: 14, flex: 1 }}>
                       {describeDay(r.startedAt)}
                     </Text>
-                    {r.protected && <Ionicons name="star" size={13} color={theme.accent} />}
                     <Text style={{ color: theme.textSecondary, fontSize: 12 }}>
                       {formatDuration(r.totalSec)}
                     </Text>
@@ -784,10 +772,10 @@ export default function ClipScreen() {
 }
 
 const styles = StyleSheet.create({
-  content: { padding: 16, paddingBottom: 48, gap: 12 },
+  content: { padding: 16, paddingBottom: 32, gap: 10 },
   recordBtn: {
     flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
-    paddingVertical: 18, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth,
+    borderRadius: 12, borderWidth: StyleSheet.hairlineWidth,
   },
   recordLabel: { fontSize: 15, fontWeight: '600' },
   splitBtn: {
@@ -822,7 +810,7 @@ const styles = StyleSheet.create({
     paddingHorizontal: 16, paddingVertical: 14, borderBottomWidth: StyleSheet.hairlineWidth,
   },
   empty: { fontSize: 13, lineHeight: 22, textAlign: 'center', marginTop: 32 },
-  card: { padding: 14, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, gap: 10 },
+  card: { padding: 14, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, gap: 8 },
   cardTitle: { fontSize: 12 },
   sourceHeader: { flexDirection: 'row', alignItems: 'center', gap: 4 },
   iconBtn: { padding: 4 },

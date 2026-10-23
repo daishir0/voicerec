@@ -32,8 +32,6 @@ export type Session = {
   fileSize: number;
   /** 区切られた回数（0 なら1本もの） */
   splits: number;
-  /** どれかが保護されていれば保護扱い */
-  protected: boolean;
   /** 最後に文字起こしした結果（どれかが持っていれば） */
   transcript?: RecordingEntry['transcript'];
 };
@@ -86,7 +84,6 @@ export function buildSessions(recordings: RecordingEntry[]): Session[] {
         audioSec: parts.reduce((s, r) => s + r.duration, 0) / 1000,
         fileSize: parts.reduce((s, r) => s + (r.fileSize || 0), 0),
         splits: parts.length - 1,
-        protected: parts.some(r => r.protected),
         transcript: parts.map(r => r.transcript).filter(Boolean).pop(),
       };
     })

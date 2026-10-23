@@ -5,7 +5,6 @@
 //
 // 安全弁（既定で有効）:
 //   - まだサーバーへ送れていないものは消さない（送る前に消えたら復元できない）
-//   - ★（protected）を付けたものは消さない
 
 import * as FileSystem from 'expo-file-system/legacy';
 import { RecordingEntry } from '@/types/recording';
@@ -28,7 +27,6 @@ export type RetentionOptions = {
 
 export type RetentionResult = {
   deleted: RecordingEntry[];
-  keptProtected: number;
   keptUnuploaded: number;
   freedBytes: number;
 };
@@ -39,7 +37,7 @@ export function selectExpired(
   opts: RetentionOptions,
   now: number = Date.now(),
 ): RetentionResult {
-  const result: RetentionResult = { deleted: [], keptProtected: 0, keptUnuploaded: 0, freedBytes: 0 };
+  const result: RetentionResult = { deleted: [], keptUnuploaded: 0, freedBytes: 0 };
   if (!opts.days) return result;
 
   const keepUnuploaded = opts.keepUnuploaded !== false;
@@ -49,7 +47,6 @@ export function selectExpired(
     // 基準は「録り終えた時刻」。長時間録音は開始が何日も前のことがある。
     const at = new Date(r.createdAt).getTime();
     if (!Number.isFinite(at) || at >= limit) continue;
-    if (r.protected) { result.keptProtected++; continue; }
     // ⚠️ 'local'（切り出しの素材）は守らない。守ると、いちばん容量を食うものが永遠に残る。
     //    守るのは「送ろうとしたのに、まだ送れていないもの」だけ。
     const pending = r.uploadStatus === 'waiting' || r.uploadStatus === 'failed'
@@ -83,8 +80,7 @@ export async function applyRetention(
   const kept = recordings.filter(r => !ids.has(r.id));
   onLog?.(
     `自動削除: ${result.deleted.length}件 / ${(result.freedBytes / 1024 / 1024).toFixed(1)}MB を解放` +
-    (result.keptUnuploaded ? `（未送信 ${result.keptUnuploaded}件は残した）` : '') +
-    (result.keptProtected ? `（★ ${result.keptProtected}件は残した）` : ''),
+    (result.keptUnuploaded ? `（未送信 ${result.keptUnuploaded}件は残した）` : ''),
   );
   return { kept, result };
 }

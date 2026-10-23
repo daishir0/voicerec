@@ -96,8 +96,6 @@ interface AppContextType {
   setStartTab: (tab: 'index' | 'clip' | 'recordings') => void;
   setActiveRecorder: (who: 'quick' | 'long' | null) => void;
   setKeepUnuploaded: (keep: boolean) => void;
-  /** ★ を付け外しする。★ の付いた録音は自動削除されない */
-  toggleProtected: (id: string) => Promise<void>;
   /** いますぐ自動削除を走らせる */
   runRetention: () => Promise<void>;
 }
@@ -561,15 +559,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(KEEP_UNUPLOADED_KEY, String(keep));
   }, []);
 
-  const toggleProtected = useCallback(async (id: string) => {
-    const next = recordingsRef.current.map(r =>
-      r.id === id ? { ...r, protected: !r.protected } : r
-    );
-    recordingsRef.current = next;
-    setRecordings(next);
-    await saveRecordings(next);
-  }, []);
-
   // 通知を有効化する際は OS の許可を取得。拒否された場合は false を返す。
   const setNotificationsEnabled = useCallback(async (enabled: boolean): Promise<boolean> => {
     if (enabled) {
@@ -630,7 +619,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setCoexistWithOtherApps,
         setStartTab,
         setActiveRecorder,
-        toggleProtected,
         runRetention,
       }}
     >
