@@ -289,6 +289,23 @@ public class VoicerecAudioModule: Module {
     return String(bytes: bytes, encoding: .ascii) ?? "?"
   }
 
+  /// どこで落ちたかの印を付けて投げ直す。
+  ///
+  /// ⚠️ 印の無い NSError は localizedDescription が
+  ///    「The operation could not be completed」にしかならず、原因の手がかりが消える。
+  ///    AVFoundation を呼ぶところは**必ず**これで包む（2026-10-23、これが無くて3往復した）。
+  fileprivate static func step<T>(_ what: String, _ body: () throws -> T) throws -> T {
+    do { return try body() } catch {
+      throw Exception(name: "StepFailed", description: describeStatic(error, where: what))
+    }
+  }
+
+  fileprivate static func step<T>(_ what: String, _ body: () async throws -> T) async throws -> T {
+    do { return try await body() } catch {
+      throw Exception(name: "StepFailed", description: describeStatic(error, where: what))
+    }
+  }
+
   /// エラーを追える文言にする。NSError の domain と code まで出す。
   fileprivate static func describeStatic(_ error: Error?, where what: String) -> String {
     describe(error, where: what)
@@ -348,9 +365,11 @@ public class VoicerecAudioModule: Module {
                                         reportingOptions: [], attributeOptions: [])
     let installed = await SpeechTranscriber.installedLocales
     if !installed.contains(where: { $0.identifier(.bcp47) == locale.identifier(.bcp47) }) {
-      if let req = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
-        try await req.downloadAndInstall()
-      }
+      try await Self.step("\(locale.identifier) の音声認識モデルの用意", {
+        if let req = try await AssetInventory.assetInstallationRequest(supporting: [transcriber]) {
+          try await req.downloadAndInstall()
+        }
+      })
     }
 
     let analyzer = SpeechAnalyzer(modules: [transcriber])
@@ -370,9 +389,9 @@ public class VoicerecAudioModule: Module {
       }
       return out
     }
-    try await analyzer.analyzeSequence(from: file)
-    try await analyzer.finalizeAndFinishThroughEndOfInput()
-    return try await collect.value
+    try await Self.step("音声の解析", { try await analyzer.analyzeSequence(from: file) })
+    try await Self.step("解析の終了処理", { try await analyzer.finalizeAndFinishThroughEndOfInput() })
+    return try await Self.step("解析結果の取り出し", { try await collect.value })
   }
 
   /// SFSpeechRecognizer。1セッション1分の上限があるので 55 秒ずつに切って回す。
@@ -384,7 +403,9 @@ public class VoicerecAudioModule: Module {
     recognizer.defaultTaskHint = .dictation
 
     let asset = AVURLAsset(url: url)
-    let total = CMTimeGetSeconds(try await asset.load(.duration))
+    let total = CMTimeGetSeconds(try await Self.step("長さの取得（分割用）", {
+      try await asset.load(.duration)
+    }))
     guard total > 0 else {
       throw Exception(name: "EmptyAudio", description: "長さが分かりません（録音中のファイル？）")
     }
@@ -455,7 +476,10 @@ public class VoicerecAudioModule: Module {
     for i in 0..<uris.count {
       let url = fileURL(uris[i])
       let asset = AVURLAsset(url: url)
-      guard let track = try await asset.loadTracks(withMediaType: .audio).first else { continue }
+      let name = url.lastPathComponent
+      guard let track = try await Self.step("\(name) のトラック読み込み", {
+        try await asset.loadTracks(withMediaType: .audio).first
+      }) else { continue }
       let from = max(0, starts[i])
       let to = ends[i] > from ? ends[i] : from
       guard to > from else { continue }
@@ -466,7 +490,9 @@ public class VoicerecAudioModule: Module {
       //    insertTimeRange は厳密で、範囲がトラックの外に出ると失敗する。
       //    2026-10-23、1時間19分（2ファイル）の文字起こしがこれで落ちていた。
       //    末尾ちょうどを選ぶのはむしろ普通の操作なので、必ず実際のトラックと重ねて丸める。
-      let trackRange = try await track.load(.timeRange)
+      let trackRange = try await Self.step("\(name) の長さの取得", {
+        try await track.load(.timeRange)
+      })
       let want = CMTimeRange(start: CMTime(seconds: from, preferredTimescale: 600),
                              end: CMTime(seconds: to, preferredTimescale: 600))
       let range = CMTimeRangeGetIntersection(want, otherRange: trackRange)
@@ -506,7 +532,9 @@ public class VoicerecAudioModule: Module {
                                 fileType: AVFileType, settings: [String: Any]) async throws -> [String: Any] {
     let began = Date()
     let asset = AVURLAsset(url: src)
-    let tracks = try await asset.loadTracks(withMediaType: .audio)
+    let tracks = try await Self.step("\(src.lastPathComponent) のトラック読み込み", {
+      try await asset.loadTracks(withMediaType: .audio)
+    })
     guard let track = tracks.first else {
       throw Exception(name: "NoAudioTrack", description: "音声トラックがありません: \(src.lastPathComponent)")
     }
@@ -514,7 +542,9 @@ public class VoicerecAudioModule: Module {
     //    ここで total で丸めると、呼び出し側が正しい範囲を渡しても「範囲が空」で弾いてしまう。
     //    2026-10-21、録音中の切り出しが試せたはずなのに、この行のせいで検証が無効になった。
     //    長さが分からないときは、頼まれた範囲をそのまま読みに行って、取れた分を返す。
-    let totalRaw = CMTimeGetSeconds(try await asset.load(.duration))
+    let totalRaw = CMTimeGetSeconds(try await Self.step("\(src.lastPathComponent) の長さの取得", {
+      try await asset.load(.duration)
+    }))
     let total = totalRaw.isFinite && totalRaw > 0 ? totalRaw : 0
     let from = max(0, startSec)
     let to = total > 0 ? min(endSec > 0 ? endSec : total, total) : max(endSec, from)
@@ -542,7 +572,7 @@ public class VoicerecAudioModule: Module {
                                       timeRange: CMTimeRange, dst: URL,
                                       fileType: AVFileType,
                                       settings: [String: Any]) async throws -> [String: Any] {
-    let reader = try AVAssetReader(asset: asset)
+    let reader = try Self.step("読み出し器の作成", { try AVAssetReader(asset: asset) })
     reader.timeRange = timeRange
     // 読み出しは必ずリニアPCMに展開する（圧縮のままでは書き手に渡せない）
     let output = AVAssetReaderTrackOutput(track: track, outputSettings: pcmSettings)
@@ -550,9 +580,13 @@ public class VoicerecAudioModule: Module {
     reader.add(output)
 
     try? FileManager.default.removeItem(at: dst)
-    try FileManager.default.createDirectory(at: dst.deletingLastPathComponent(),
-                                            withIntermediateDirectories: true)
-    let writer = try AVAssetWriter(outputURL: dst, fileType: fileType)
+    try Self.step("書き出し先の作成 \(dst.deletingLastPathComponent().lastPathComponent)", {
+      try FileManager.default.createDirectory(at: dst.deletingLastPathComponent(),
+                                              withIntermediateDirectories: true)
+    })
+    let writer = try Self.step("書き出し器の作成 \(dst.lastPathComponent)", {
+      try AVAssetWriter(outputURL: dst, fileType: fileType)
+    })
     let input = AVAssetWriterInput(mediaType: .audio, outputSettings: settings)
     input.expectsMediaDataInRealTime = false
     writer.add(input)
@@ -592,7 +626,9 @@ public class VoicerecAudioModule: Module {
     }
     let size = (try? FileManager.default.attributesOfItem(atPath: dst.path)[.size] as? NSNumber)??.intValue ?? 0
     // 書けた実際の長さ。録音中のファイルからだと、頼んだ範囲より短くなることがある
-    let wrote = CMTimeGetSeconds(try await AVURLAsset(url: dst).load(.duration))
+    let wrote = CMTimeGetSeconds(try await Self.step("書けたファイルの長さの確認", {
+      try await AVURLAsset(url: dst).load(.duration)
+    }))
     let span = CMTimeGetSeconds(timeRange.duration)
     return [
       "uri": dst.path,

@@ -15,6 +15,7 @@ import {
 import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import * as Clipboard from 'expo-clipboard';
+import Constants from 'expo-constants';
 import { useApp } from '@/contexts/AppContext';
 import { testConnection } from '@/services/upload-service';
 import { TRANSCRIBE_LOCALES } from '@/services/clip-service';
@@ -322,6 +323,17 @@ export default function SettingsScreen() {
               onValueChange={setKeepUnuploaded}
               trackColor={{ false: theme.bgTertiary, true: theme.accent }}
             />
+          </View>
+        </View>
+
+        {/* バージョン。どのビルドで起きた話かを、毎回聞かずに済むようにする */}
+        <View style={[styles.debugSection, { borderTopColor: theme.border }]}>
+          <View style={styles.debugToggleRow}>
+            <Text style={[styles.label, { color: theme.textSecondary, marginTop: 0 }]}>バージョン</Text>
+            <Text style={{ color: theme.text, fontSize: 14 }}>
+              {Constants.expoConfig?.version ?? '?'}
+              {' ('}{Constants.expoConfig?.ios?.buildNumber ?? '?'}{')'}
+            </Text>
           </View>
         </View>
 

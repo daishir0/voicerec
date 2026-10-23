@@ -21,6 +21,7 @@ import {
   setBadgeCount,
 } from '@/services/notification-service';
 import AsyncStorage from '@react-native-async-storage/async-storage';
+import Constants from 'expo-constants';
 
 const DARK_MODE_KEY = 'rec18082_darkMode';
 const DEBUG_MODE_KEY = 'rec18082_debugMode';
@@ -515,9 +516,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setIsDebugMode(prev => {
       const next = !prev;
       AsyncStorage.setItem(DEBUG_MODE_KEY, String(next));
+      // ログを貼ってもらったときに、どのビルドの話か分かるようにしておく
+      if (next) {
+        addDebugLog(`voicerec ${Constants.expoConfig?.version ?? '?'} ` +
+          `(${Constants.expoConfig?.ios?.buildNumber ?? '?'})`);
+      }
       return next;
     });
-  }, []);
+  }, [addDebugLog]);
 
   const clearDebugLogs = useCallback(() => {
     setDebugLogs([]);
