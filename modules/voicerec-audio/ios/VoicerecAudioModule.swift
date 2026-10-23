@@ -290,6 +290,10 @@ public class VoicerecAudioModule: Module {
   }
 
   /// エラーを追える文言にする。NSError の domain と code まで出す。
+  fileprivate static func describeStatic(_ error: Error?, where what: String) -> String {
+    describe(error, where: what)
+  }
+
   private static func describe(_ error: Error?, where what: String) -> String {
     guard let e = error as NSError? else { return "\(what)に失敗しました（詳細不明）" }
     var s = "\(what)に失敗: \(e.localizedDescription) [\(e.domain) \(e.code)]"
@@ -350,7 +354,13 @@ public class VoicerecAudioModule: Module {
     }
 
     let analyzer = SpeechAnalyzer(modules: [transcriber])
-    let file = try AVAudioFile(forReading: url)
+    let file: AVAudioFile
+    do {
+      file = try AVAudioFile(forReading: url)
+    } catch {
+      throw Exception(name: "OpenFailed",
+                      description: Self.describeStatic(error, where: "音声ファイルを開く \(url.lastPathComponent)"))
+    }
 
     // 読み出しは音声を流し込むのと同時に回す（先に finalize すると取りこぼす）
     let collect = Task { () -> String in
@@ -408,7 +418,9 @@ public class VoicerecAudioModule: Module {
         if resumed { return }
         if let error = error {
           resumed = true
-          cont.resume(throwing: error)
+          cont.resume(throwing: Exception(
+            name: "RecognizeFailed",
+            description: Self.describeStatic(error, where: "音声認識 \(url.lastPathComponent)")))
           return
         }
         if let result = result, result.isFinal {
@@ -444,15 +456,32 @@ public class VoicerecAudioModule: Module {
       let url = fileURL(uris[i])
       let asset = AVURLAsset(url: url)
       guard let track = try await asset.loadTracks(withMediaType: .audio).first else { continue }
-      // 録音中のファイルは長さが 0 と返る。そのときは頼まれた範囲をそのまま読む
-      let totalRaw = CMTimeGetSeconds(try await asset.load(.duration))
-      let total = totalRaw.isFinite && totalRaw > 0 ? totalRaw : 0
       let from = max(0, starts[i])
-      let to = total > 0 ? min(ends[i] > 0 ? ends[i] : total, total) : max(ends[i], from)
+      let to = ends[i] > from ? ends[i] : from
       guard to > from else { continue }
-      let range = CMTimeRange(start: CMTime(seconds: from, preferredTimescale: 600),
-                              end: CMTime(seconds: to, preferredTimescale: 600))
-      try compTrack.insertTimeRange(range, of: track, at: cursor)
+
+      // ⚠️ **秒から作った CMTime をそのまま渡さない。**
+      //    秒 → timescale 600 の変換で端数が切り上がり、トラックの末尾を数ミリ秒超えることがある。
+      //    AVAssetReader は超えても読める分だけ読むので単一ファイルでは表に出ないが、
+      //    insertTimeRange は厳密で、範囲がトラックの外に出ると失敗する。
+      //    2026-10-23、1時間19分（2ファイル）の文字起こしがこれで落ちていた。
+      //    末尾ちょうどを選ぶのはむしろ普通の操作なので、必ず実際のトラックと重ねて丸める。
+      let trackRange = try await track.load(.timeRange)
+      let want = CMTimeRange(start: CMTime(seconds: from, preferredTimescale: 600),
+                             end: CMTime(seconds: to, preferredTimescale: 600))
+      let range = CMTimeRangeGetIntersection(want, otherRange: trackRange)
+      guard range.duration > .zero else { continue }
+
+      do {
+        try compTrack.insertTimeRange(range, of: track, at: cursor)
+      } catch {
+        throw Exception(
+          name: "CompositionFailed",
+          description: Self.describe(error, where:
+            "\(i + 1)本目（全\(uris.count)本）の連結 \(url.lastPathComponent) " +
+            "\(String(format: "%.3f", CMTimeGetSeconds(range.start)))〜" +
+            "\(String(format: "%.3f", CMTimeGetSeconds(CMTimeRangeGetEnd(range))))秒"))
+      }
       cursor = CMTimeAdd(cursor, range.duration)
       used += 1
     }
