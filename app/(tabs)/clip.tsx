@@ -17,6 +17,7 @@ import {
 import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
+import { useLocalSearchParams } from 'expo-router';
 import { useApp } from '@/contexts/AppContext';
 import TimeRangePicker, {
   formatDuration, type PlayRequest, type PlayTarget, type Range,
@@ -48,6 +49,18 @@ function generateId(): string {
   return id;
 }
 
+/** 「今日 16:05」「昨日 9:30」「10/21 14:12」。全部書くと読みにくい */
+function describeDay(d: Date): string {
+  const now = new Date();
+  const hm = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+  const sameDay = (a: Date, b: Date) =>
+    a.getFullYear() === b.getFullYear() && a.getMonth() === b.getMonth() && a.getDate() === b.getDate();
+  const yesterday = new Date(now.getTime() - 86400000);
+  if (sameDay(d, now)) return `今日 ${hm}`;
+  if (sameDay(d, yesterday)) return `昨日 ${hm}`;
+  return `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
+}
+
 function stamp(d: Date): string {
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
@@ -65,6 +78,8 @@ export default function ClipScreen() {
   );
   const state = useAudioRecorderState(recorder, 1000);
 
+  // 録音一覧からこのタブへ来たとき、その録音を開く
+  const params = useLocalSearchParams<{ session?: string }>();
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [levels, setLevels] = useState<Uint8Array>(new Uint8Array(0));
   const [range, setRange] = useState<Range>({ startSec: 0, endSec: 0 });
@@ -87,6 +102,13 @@ export default function ClipScreen() {
     () => sessions.find(s => s.id === sourceId) ?? sessions[0] ?? null,
     [sessions, sourceId],
   );
+
+  // 一覧で選ばれた録音が含まれるセッションに合わせる
+  useEffect(() => {
+    if (!params.session) return;
+    const hit = sessions.find(s => s.parts.some(p => p.rec.id === params.session));
+    if (hit) setSourceId(hit.id);
+  }, [params.session, sessions]);
 
   // 再生して確かめる。
   //
@@ -182,7 +204,8 @@ export default function ClipScreen() {
         setRange({ startSec: saved.startSec, endSec: saved.endSec });
         setTranscript({ text: saved.text, engine: saved.engine, ms: 0 });
       } else {
-        setRange({ startSec: Math.max(0, total - 300), endSec: total });
+        // 録り終えた直後は全体が選ばれている方が自然（後から狭める方が速い）
+        setRange({ startSec: 0, endSec: total });
         setTranscript(null);
       }
     })();
@@ -206,7 +229,8 @@ export default function ClipScreen() {
         allowsRecording: false, playsInSilentMode: true, interruptionMode: 'mixWithOthers',
       });
       // 範囲が複数ファイルにまたがるときは、順に読み替えて鳴らす
-      const pieces = piecesForRange(source, req.fromSec, req.toSec ?? source.totalSec);
+      // どちらの端から押しても、そこから最後まで（止めるまで）鳴らす
+      const pieces = piecesForRange(source, req.fromSec, source.totalSec);
       if (pieces.length === 0) { stopPlay(); return; }
       playQueueRef.current = { pieces, index: 0 };
       if (loadedUriRef.current !== pieces[0].uri) {
@@ -348,8 +372,8 @@ export default function ClipScreen() {
         duration: durationMs,
         fileSize,
         mimeType: 'audio/x-caf',
-        // 長時間録音は自動送信しない。範囲を選んでから送る。
-        uploadStatus: 'uploaded',
+        // 素材なのでそのままでは送らない。範囲を選んでから送る。
+        uploadStatus: 'local',
         createdAt: new Date().toISOString(),
         kind: 'long',
         startedAt: startedAt.toISOString(),
@@ -414,6 +438,21 @@ export default function ClipScreen() {
       breakingRef.current = false;
     }
   };
+
+  const showRecordingHelp = useCallback(() => {
+    Alert.alert(
+      '録音中の操作について',
+      '「ここまでを確定する」を押すと、そこまでを確定して、すぐ録音を続けます。' +
+      '止まるのは1秒未満です。\n\n' +
+      '確定した分と、その後の録音は、1本の録音として扱われます。' +
+      '範囲は境目をまたいで選べます。\n\n' +
+      '「停止」を押すと、その録音は終わりです。次に録音したものは別の1本になります。' +
+      (coexistWithOtherApps
+        ? '\n\n他のアプリが音を鳴らしても録音は続きます（設定で変えられます）。'
+        : '\n\n他のアプリが音を鳴らすと録音が止まります（設定で変えられます）。'),
+      [{ text: '閉じる' }],
+    );
+  }, [coexistWithOtherApps]);
 
   const doDelete = useCallback(() => {
     if (!source) return;
@@ -497,6 +536,12 @@ export default function ClipScreen() {
 
   const elapsed = Math.floor((state.durationMillis || 0) / 1000);
   const totalSec = source ? source.totalSec : 0;
+  // 素材と成果の関係が見えるようにする
+  const sentFromSource = useMemo(() => {
+    if (!source) return 0;
+    const ids = new Set(source.parts.map(p => p.rec.id));
+    return recordings.filter(r => r.kind === 'clip' && r.sourceId && ids.has(r.sourceId)).length;
+  }, [source, recordings]);
 
   return (
     <ScrollView style={{ backgroundColor: theme.bg }} contentContainerStyle={styles.content}>
@@ -541,21 +586,28 @@ export default function ClipScreen() {
               ここまでを確定する
             </Text>
           </Pressable>
-          <Text style={[styles.note, { color: theme.textSecondary }]}>
-            確定したあとも録音は続きます（止まるのは1秒未満）。確定した分は、
-            そのまま続きと1本の録音として扱われます。
-            {inputName ? `\nマイク: ${inputName}` : ''}
-            {freeBytes != null ? `\n空き ${formatBytes(freeBytes)}（${formatHours(freeBytes, 2048)}ぶん）` : ''}
-            {coexistWithOtherApps ? '' : '\n他アプリが音を鳴らすと録音が止まります（設定で変えられます）'}
-          </Text>
+          <View style={styles.recInfoRow}>
+            <Text style={[styles.note, { color: theme.textSecondary }]}>
+              {inputName ? `マイク: ${inputName}` : ''}
+              {freeBytes != null ? `${inputName ? ' ・ ' : ''}空き ${formatHours(freeBytes, 2048)}ぶん` : ''}
+            </Text>
+            <Pressable onPress={showRecordingHelp} hitSlop={10}>
+              <Ionicons name="information-circle-outline" size={20} color={theme.accent} />
+            </Pressable>
+          </View>
         </>
+      )}
+
+      {!state.isRecording && (
+        <Text style={[styles.lead, { color: theme.textSecondary }]}>
+          録って、あとから必要な範囲だけを文字起こし・送信します
+        </Text>
       )}
 
       {!source && !state.isRecording && (
         <Text style={[styles.empty, { color: theme.textSecondary }]}>
-          まだ長い録音がありません。{'\n'}
-          上のボタンで録音を始めてください。止めたあと、時間の範囲を選んで{'\n'}
-          その部分だけを文字起こし・送信できます。
+          まだ録音がありません。{'\n'}
+          上のボタンで録音を始めてください。
         </Text>
       )}
 
@@ -565,14 +617,25 @@ export default function ClipScreen() {
             <View style={styles.sourceHeader}>
               <Pressable
                 onPress={() => sessions.length > 1 && setPicking(true)}
-                style={styles.sourcePick}
+                disabled={sessions.length <= 1}
+                style={[styles.sourcePick, {
+                  borderColor: sessions.length > 1 ? theme.accent : 'transparent',
+                  backgroundColor: sessions.length > 1 ? theme.bgTertiary : 'transparent',
+                }]}
               >
-                <Text style={[styles.cardTitle, { color: theme.textSecondary }]}>
-                  {source.startedAt.toLocaleString('ja-JP')} から
-                  {' '}{formatDuration(totalSec)} ・ {formatBytes(source.fileSize)}
-                </Text>
+                <Ionicons name="albums-outline" size={15} color={theme.accent} />
+                <View style={{ flex: 1 }}>
+                  <Text style={{ color: theme.text, fontSize: 14, fontWeight: '600' }}>
+                    {describeDay(source.startedAt)} の録音
+                  </Text>
+                  <Text style={[styles.cardTitle, { color: theme.textSecondary }]}>
+                    {formatDuration(totalSec)} ・ {formatBytes(source.fileSize)}
+                    {sentFromSource > 0 ? ` ・ ${sentFromSource}件を送信済み` : ''}
+                    {sessions.length > 1 ? ` ・ ほかに${sessions.length - 1}件` : ''}
+                  </Text>
+                </View>
                 {sessions.length > 1 && (
-                  <Ionicons name="chevron-down" size={14} color={theme.accent} />
+                  <Ionicons name="chevron-down" size={16} color={theme.accent} />
                 )}
               </Pressable>
               <Pressable
@@ -607,7 +670,7 @@ export default function ClipScreen() {
               playing={playing}
               onPlay={startPlay}
               onStop={stopPlay}
-              playDisabledReason={state.isRecording ? '録音中は再生できません' : null}
+              playDisabled={state.isRecording}
             />
           </View>
 
@@ -700,9 +763,7 @@ export default function ClipScreen() {
                       color={on ? theme.accent : 'transparent'}
                     />
                     <Text style={{ color: theme.text, fontSize: 14, flex: 1 }}>
-                      {r.startedAt.toLocaleString('ja-JP', {
-                        month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
-                      })}
+                      {describeDay(r.startedAt)}
                     </Text>
                     {r.protected && <Ionicons name="star" size={13} color={theme.accent} />}
                     <Text style={{ color: theme.textSecondary, fontSize: 12 }}>
@@ -734,11 +795,19 @@ const styles = StyleSheet.create({
     paddingVertical: 12, borderRadius: 10, borderWidth: 1,
   },
   note: { fontSize: 12, textAlign: 'center', lineHeight: 18 },
+  lead: { fontSize: 12, textAlign: 'center', lineHeight: 18 },
   notice: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
     padding: 10, borderRadius: 10, borderWidth: StyleSheet.hairlineWidth,
   },
-  sourcePick: { flex: 1, flexDirection: 'row', alignItems: 'center', gap: 4 },
+  sourcePick: {
+    flex: 1, flexDirection: 'row', alignItems: 'center', gap: 8,
+    paddingHorizontal: 10, paddingVertical: 8,
+    borderRadius: 10, borderWidth: StyleSheet.hairlineWidth,
+  },
+  recInfoRow: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'center', gap: 10,
+  },
   modalBack: { flex: 1, backgroundColor: '#0008', justifyContent: 'flex-end' },
   sheet: {
     borderTopLeftRadius: 16, borderTopRightRadius: 16,

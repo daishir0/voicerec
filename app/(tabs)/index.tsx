@@ -216,6 +216,12 @@ export default function RecordScreen() {
         <Text style={[styles.status, { color: theme.textSecondary }]}>
           {isRecording ? '録音中...' : 'タップして録音開始'}
         </Text>
+        {!isRecording && (
+          <Text style={[styles.lead, { color: theme.textSecondary }]}>
+            録ってすぐ送ります{'\n'}
+            あとから範囲を選びたいときは「切り出し」タブへ
+          </Text>
+        )}
       </View>
       <RecordButton isRecording={isRecording} onPress={handlePress} metering={activeState.metering} />
     </View>
@@ -240,5 +246,11 @@ const styles = StyleSheet.create({
   status: {
     fontSize: 16,
     marginTop: 8,
+  },
+  lead: {
+    fontSize: 12,
+    marginTop: 14,
+    textAlign: 'center',
+    lineHeight: 18,
   },
 });

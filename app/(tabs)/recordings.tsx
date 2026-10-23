@@ -1,13 +1,40 @@
-import React, { useState } from 'react';
-import { View, Text, FlatList, StyleSheet, Alert, Pressable, Linking, ActivityIndicator } from 'react-native';
+import { useState } from 'react';
+import {
+  ActivityIndicator, Alert, Linking, Pressable, SectionList, StyleSheet, Text, View,
+} from 'react-native';
 import { useApp } from '@/contexts/AppContext';
 import { RecordingListItem } from '@/components/RecordingListItem';
 import { formatBytes, retentionLabel, totalBytes } from '@/services/retention';
+import React, { useMemo } from 'react';
 import { loginAndGetToken } from '@/services/upload-service';
 
 export default function RecordingsScreen() {
   const { theme, recordings, updateRecording, settings, retentionDays } = useApp();
   const [openingServer, setOpeningServer] = useState(false);
+
+  // ⚠️ 一覧には性質の違うものが並ぶ。**素材**（切り出し元の長い録音）と
+  //    **成果**（サーバーへ送ったもの）を混ぜると、「なぜこれは送られていないのか」が
+  //    分からなくなる。意味で分けて見せる。
+  const sections = useMemo(() => {
+    const material = recordings.filter(r => r.kind === 'long');
+    const sent = recordings.filter(r => r.kind !== 'long');
+    const out: { title: string; hint: string; data: typeof recordings }[] = [];
+    if (material.length) {
+      out.push({
+        title: '録音（ここから切り出す）',
+        hint: 'サーバーには送りません。押すと範囲を選べます',
+        data: material,
+      });
+    }
+    if (sent.length) {
+      out.push({
+        title: 'サーバーへ送ったもの',
+        hint: '送った音声はサーバー側で文字起こしされます',
+        data: sent,
+      });
+    }
+    return out;
+  }, [recordings]);
 
   const handleEditName = (id: string, currentName: string) => {
     Alert.prompt(
@@ -98,12 +125,19 @@ export default function RecordingsScreen() {
           {retentionDays ? `${retentionLabel(retentionDays)}より古い録音は自動で削除` : '自動削除しない設定です'}
         </Text>
       </View>
-      <FlatList
-        data={recordings}
+      <SectionList
+        sections={sections}
         keyExtractor={(item) => item.id}
         renderItem={({ item }) => (
           <RecordingListItem recording={item} onEditName={handleEditName} />
         )}
+        renderSectionHeader={({ section }) => (
+          <View style={styles.sectionHead}>
+            <Text style={[styles.sectionTitle, { color: theme.text }]}>{section.title}</Text>
+            <Text style={[styles.sectionHint, { color: theme.textSecondary }]}>{section.hint}</Text>
+          </View>
+        )}
+        stickySectionHeadersEnabled={false}
         contentContainerStyle={{ paddingVertical: 8 }}
         ListFooterComponent={serverLinkButton}
       />
@@ -121,6 +155,9 @@ const styles = StyleSheet.create({
     borderBottomWidth: StyleSheet.hairlineWidth,
   },
   summaryText: { fontSize: 12 },
+  sectionHead: { paddingHorizontal: 16, paddingTop: 16, paddingBottom: 6 },
+  sectionTitle: { fontSize: 14, fontWeight: '600' },
+  sectionHint: { fontSize: 11, marginTop: 2 },
   container: {
     flex: 1,
   },

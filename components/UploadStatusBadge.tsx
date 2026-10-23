@@ -2,7 +2,9 @@ import React from 'react';
 import { View, Text, StyleSheet } from 'react-native';
 import { UploadStatus } from '@/types/recording';
 
-const STATUS_CONFIG: Record<UploadStatus, { label: string; bg: string; text: string }> = {
+// 'local'（切り出しの素材）はサーバーに送らないので、送信状態のバッジを出さない
+const STATUS_CONFIG: Record<UploadStatus, { label: string; bg: string; text: string } | null> = {
+  local: null,
   waiting: { label: '待機中', bg: '#8e8e93', text: '#fff' },
   uploading: { label: 'アップロード中', bg: '#007AFF', text: '#fff' },
   uploaded: { label: 'アップロード済み', bg: '#34C759', text: '#fff' },
@@ -15,6 +17,7 @@ interface UploadStatusBadgeProps {
 
 export function UploadStatusBadge({ status }: UploadStatusBadgeProps) {
   const config = STATUS_CONFIG[status];
+  if (!config) return null;
 
   return (
     <View style={[styles.badge, { backgroundColor: config.bg }]}>

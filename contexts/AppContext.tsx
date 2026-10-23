@@ -255,7 +255,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     let changed = false;
     const repaired = await Promise.all(
       recs.map(async (rec) => {
-        if (rec.uploadStatus === 'uploaded') return rec; // 送信済みは修復不要
+        // 送信済みは修復不要。素材（local）は読めないと困るので修復する
+        if (rec.uploadStatus === 'uploaded') return rec;
 
         // 現在のURIが有効ならそのまま
         try {

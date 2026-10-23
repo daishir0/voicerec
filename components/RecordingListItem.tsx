@@ -1,5 +1,6 @@
 import React from 'react';
 import { View, Text, StyleSheet, Pressable, Alert } from 'react-native';
+import { useRouter } from 'expo-router';
 import { Ionicons } from '@expo/vector-icons';
 import { RecordingEntry } from '@/types/recording';
 import { UploadStatusBadge } from './UploadStatusBadge';
@@ -29,8 +30,10 @@ function formatDate(isoString: string): string {
 }
 
 export function RecordingListItem({ recording, onEditName }: RecordingListItemProps) {
+  const router = useRouter();
   const { theme, deleteRecording, retryUpload } = useApp();
   const isUploaded = recording.uploadStatus === 'uploaded';
+  const isMaterial = recording.kind === 'long';
   const isFailed = recording.uploadStatus === 'failed';
   const isUploading = recording.uploadStatus === 'uploading';
   const progress = typeof recording.uploadProgress === 'number'
@@ -52,29 +55,46 @@ export function RecordingListItem({ recording, onEditName }: RecordingListItemPr
     retryUpload(recording.id);
   };
 
+  // 長い録音は、押したら「切り出し」タブでその録音を開く。
+  // 一覧は録音を探す場所なので、ここが範囲選択への自然な入口になる。
+  const openInClip = recording.kind === 'long'
+    ? () => router.navigate({ pathname: '/clip', params: { session: recording.id } })
+    : undefined;
+
   return (
-    <View style={[
-      styles.container,
-      { backgroundColor: isUploaded ? theme.bgTertiary : theme.bgSecondary, borderColor: theme.border },
-      isUploaded && { opacity: 0.6 },
-    ]}>
+    <Pressable
+      onPress={openInClip}
+      disabled={!openInClip}
+      style={[
+        styles.container,
+        { backgroundColor: isUploaded && !isMaterial ? theme.bgTertiary : theme.bgSecondary,
+          borderColor: theme.border },
+        isUploaded && !isMaterial && { opacity: 0.6 },
+      ]}
+    >
       <View style={styles.header}>
         <View style={[styles.nameRow, { opacity: isUploaded ? 0.8 : 1 }]}>
           <Text style={[styles.name, { color: theme.text }]} numberOfLines={1}>
             {recording.displayName}
           </Text>
-          {!isUploaded && (
+          {!isUploaded && !isMaterial && (
             <Pressable onPress={() => onEditName(recording.id, recording.displayName)}>
               <Ionicons name="pencil" size={14} color={theme.textSecondary} style={{ marginLeft: 4 }} />
             </Pressable>
           )}
         </View>
-        {!isUploaded && (
+        {(!isUploaded || isMaterial) && (
           <Pressable onPress={handleDelete} hitSlop={8}>
             <Ionicons name="trash-outline" size={20} color={theme.red} />
           </Pressable>
         )}
       </View>
+      {openInClip && (
+        <View style={styles.openRow}>
+          <Ionicons name="cut-outline" size={13} color={theme.accent} />
+          <Text style={{ color: theme.accent, fontSize: 12 }}>押すと範囲を選べます</Text>
+        </View>
+      )}
       <View style={styles.meta}>
         <Text style={[styles.metaText, { color: theme.textSecondary }]}>
           {formatDuration(recording.duration)} ・ {formatFileSize(recording.fileSize)}
@@ -107,11 +127,12 @@ export function RecordingListItem({ recording, onEditName }: RecordingListItemPr
           />
         </View>
       )}
-    </View>
+    </Pressable>
   );
 }
 
 const styles = StyleSheet.create({
+  openRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   container: {
     marginHorizontal: 16,
     marginVertical: 4,

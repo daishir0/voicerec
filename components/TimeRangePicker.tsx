@@ -5,14 +5,15 @@
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  NativeScrollEvent, NativeSyntheticEvent, Pressable, ScrollView, StyleSheet, Text, View,
+  LayoutChangeEvent, NativeScrollEvent, NativeSyntheticEvent, PanResponder, Pressable,
+  ScrollView, StyleSheet, Text, View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { downsample } from '@/services/level-track';
 
 export type Range = { startSec: number; endSec: number };
-/** 'range' は範囲の終わりで自動的に止まる。'edge' は止めるまで鳴り続ける。 */
-export type PlayTarget = 'range' | 'edge';
+/** どちらの端から鳴らすか。どちらも**止めるまで鳴り続ける**（聴きたい長さは人による） */
+export type PlayTarget = 'start' | 'end';
 export type PlayRequest = { what: PlayTarget; fromSec: number; toSec: number | null };
 
 type Theme = {
@@ -20,6 +21,8 @@ type Theme = {
   text: string; textSecondary: string; border: string; accent: string; red: string;
 };
 
+const WAVE_H = 72;
+const HANDLE_W = 36;
 const ITEM_H = 38;
 const VISIBLE = 5;
 const WHEEL_H = ITEM_H * VISIBLE;
@@ -114,15 +117,51 @@ type Props = {
   playing?: PlayTarget | null;
   onPlay?: (req: PlayRequest) => void;
   onStop?: () => void;
-  playDisabledReason?: string | null;
+  /** 録音中など、再生できないとき。ボタンを押せなくするだけで、文言は出さない */
+  playDisabled?: boolean;
 };
 
 export default function TimeRangePicker({
   levels, startedAt, durationSec, value, onChange, theme, bytesPerSec = 2048,
-  playheadSec = null, playing = null, onPlay, onStop, playDisabledReason = null,
+  playheadSec = null, playing = null, onPlay, onStop, playDisabled = false,
 }: Props) {
   const [edge, setEdge] = useState<'start' | 'end'>('start');
   const [width, setWidth] = useState(0);
+
+  // 波形のドラッグとダイヤルは同じ値を編集する。どちらを動かしても他方が追従する。
+  const widthRef = useRef(0);
+  widthRef.current = width;
+  const durationRef = useRef(durationSec);
+  durationRef.current = durationSec;
+  const valueRef = useRef(value);
+  valueRef.current = value;
+  const dragBase = useRef(value);
+  const onChangeRef = useRef(onChange);
+  onChangeRef.current = onChange;
+
+  const dxToSec = useCallback(
+    (dx: number) => (dx / Math.max(1, widthRef.current)) * durationRef.current, []);
+
+  const makeHandle = useCallback((which: 'start' | 'end') => PanResponder.create({
+    onStartShouldSetPanResponder: () => true,
+    onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 2,
+    onPanResponderGrant: () => { dragBase.current = valueRef.current; },
+    onPanResponderMove: (_, g) => {
+      const d = dxToSec(g.dx);
+      const base = dragBase.current;
+      const total = durationRef.current;
+      if (which === 'start') {
+        const next = Math.min(Math.max(0, base.startSec + d), base.endSec - 1);
+        onChangeRef.current({ startSec: next, endSec: base.endSec });
+      } else {
+        const next = Math.max(Math.min(total, base.endSec + d), base.startSec + 1);
+        onChangeRef.current({ startSec: base.startSec, endSec: next });
+      }
+    },
+  }), [dxToSec]);
+
+  const startPan = useRef(makeHandle('start')).current;
+  const endPan = useRef(makeHandle('end')).current;
 
   const endAt = useMemo(() => new Date(startedAt.getTime() + durationSec * 1000), [startedAt, durationSec]);
   const editing = edge === 'start' ? value.startSec : value.endSec;
@@ -178,7 +217,7 @@ export default function TimeRangePicker({
 
   const PlayBtn = ({ what, label, req }: { what: PlayTarget; label: string; req: PlayRequest }) => {
     const on = playing === what;
-    const disabled = !!playDisabledReason;
+    const disabled = playDisabled;
     return (
       <Pressable
         onPress={() => (on ? onStop?.() : onPlay?.(req))}
@@ -211,10 +250,10 @@ export default function TimeRangePicker({
         </Text>
       </View>
 
-      {/* 波形（どこで話していたかを見るだけ） */}
+      {/* 波形。見るだけでなく、両端をつまんで範囲を決められる（ダイヤルと同期する） */}
       <View
         style={[styles.wave, { backgroundColor: theme.bgSecondary, borderColor: theme.border }]}
-        onLayout={e => setWidth(e.nativeEvent.layout.width)}
+        onLayout={(e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width)}
       >
         <View style={styles.bars}>
           {bars.map((v, i) => {
@@ -223,7 +262,7 @@ export default function TimeRangePicker({
             return (
               <View key={i} style={{
                 width: 2, marginRight: 1,
-                height: Math.max(2, (v / 100) * 36),
+                height: Math.max(2, (v / 100) * (WAVE_H - 20)),
                 backgroundColor: inRange ? theme.accent : theme.bgTertiary,
                 borderRadius: 1,
               }} />
@@ -235,7 +274,22 @@ export default function TimeRangePicker({
             left: (playheadSec / durationSec) * width, backgroundColor: theme.red,
           }]} />
         )}
+        {width > 0 && durationSec > 0 && (
+          <>
+            <View {...startPan.panHandlers}
+              style={[styles.handle, { left: (value.startSec / durationSec) * width - HANDLE_W / 2 }]}>
+              <View style={[styles.handleBar, { backgroundColor: theme.accent }]} />
+            </View>
+            <View {...endPan.panHandlers}
+              style={[styles.handle, { left: (value.endSec / durationSec) * width - HANDLE_W / 2 }]}>
+              <View style={[styles.handleBar, { backgroundColor: theme.accent }]} />
+            </View>
+          </>
+        )}
       </View>
+      <Text style={[styles.hint, { color: theme.textSecondary, marginTop: 4 }]}>
+        波形の両端をドラッグしても選べます
+      </Text>
 
       {/* どちらの端を動かすか */}
       <View style={[styles.segment, { borderColor: theme.border }]}>
@@ -266,21 +320,17 @@ export default function TimeRangePicker({
         <Wheel values={seconds} value={at.getSeconds()} onChange={v => setPart('s', v)} theme={theme} suffix="秒" />
       </View>
 
-      {/* 聴いて確かめる。端からの再生は止めるまで鳴り続けるので、好きなだけ聴ける */}
+      {/* 端から鳴らして確かめる。どちらも**止めるまで鳴り続ける** */}
       <View style={styles.playRow}>
         <PlayBtn
-          what="range" label="範囲を再生"
-          req={{ what: 'range', fromSec: value.startSec, toSec: value.endSec }}
+          what="start" label="開始位置から再生"
+          req={{ what: 'start', fromSec: value.startSec, toSec: null }}
         />
         <PlayBtn
-          what="edge"
-          label={edge === 'start' ? '開始位置から再生' : '終了位置から再生'}
-          req={{ what: 'edge', fromSec: editing, toSec: null }}
+          what="end" label="終了位置から再生"
+          req={{ what: 'end', fromSec: value.endSec, toSec: null }}
         />
       </View>
-      {playDisabledReason && (
-        <Text style={[styles.hint, { color: theme.textSecondary, marginTop: 6 }]}>{playDisabledReason}</Text>
-      )}
     </View>
   );
 }
@@ -290,9 +340,14 @@ const styles = StyleSheet.create({
   range: { fontSize: 22, fontWeight: '500', fontVariant: ['tabular-nums'] },
   hint: { fontSize: 12, textAlign: 'center', marginTop: 2 },
   wave: {
-    height: 48, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth,
+    height: WAVE_H, borderRadius: 8, borderWidth: StyleSheet.hairlineWidth,
     justifyContent: 'center', overflow: 'hidden',
   },
+  handle: {
+    position: 'absolute', top: 0, bottom: 0, width: HANDLE_W,
+    alignItems: 'center', justifyContent: 'center',
+  },
+  handleBar: { width: 5, height: WAVE_H - 16, borderRadius: 3 },
   bars: { flexDirection: 'row', alignItems: 'center', height: '100%', paddingHorizontal: 2 },
   playhead: { position: 'absolute', top: 0, bottom: 0, width: 2 },
   segment: {

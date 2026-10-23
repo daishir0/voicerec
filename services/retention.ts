@@ -50,7 +50,11 @@ export function selectExpired(
     const at = new Date(r.createdAt).getTime();
     if (!Number.isFinite(at) || at >= limit) continue;
     if (r.protected) { result.keptProtected++; continue; }
-    if (keepUnuploaded && r.uploadStatus !== 'uploaded') { result.keptUnuploaded++; continue; }
+    // ⚠️ 'local'（切り出しの素材）は守らない。守ると、いちばん容量を食うものが永遠に残る。
+    //    守るのは「送ろうとしたのに、まだ送れていないもの」だけ。
+    const pending = r.uploadStatus === 'waiting' || r.uploadStatus === 'failed'
+      || r.uploadStatus === 'uploading';
+    if (keepUnuploaded && pending) { result.keptUnuploaded++; continue; }
     result.deleted.push(r);
     result.freedBytes += r.fileSize || 0;
   }

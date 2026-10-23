@@ -1,4 +1,9 @@
-export type UploadStatus = 'waiting' | 'uploading' | 'uploaded' | 'failed';
+/**
+ * `local` は「サーバーに送らないもの」。長時間録音は切り出しの**素材**なので、
+ * そのままでは送らない。以前は送信対象から外すために 'uploaded' を流用していて、
+ * 一度も送っていない録音に「アップロード済み」と出ていた（2026-10-23 に直した）。
+ */
+export type UploadStatus = 'local' | 'waiting' | 'uploading' | 'uploaded' | 'failed';
 
 /**
  * 録音の種類。

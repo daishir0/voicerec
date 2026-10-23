@@ -38,7 +38,7 @@ export default function TabLayout() {
       <Tabs.Screen
         name="index"
         options={{
-          title: '録音',
+          title: 'クイック録音',
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="mic" size={size} color={color} />
           ),

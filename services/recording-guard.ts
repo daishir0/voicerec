@@ -72,7 +72,7 @@ export async function recoverOrphanRecordings(
       duration: Math.round(probe.durationSec * 1000),
       fileSize: probe.fileSize,
       mimeType: 'audio/x-caf',
-      uploadStatus: 'uploaded', // 長時間録音はそのままでは送らない
+      uploadStatus: 'local', // 素材なのでそのままでは送らない
       createdAt: new Date(startedAt.getTime() + probe.durationSec * 1000).toISOString(),
       kind: 'long',
       startedAt: startedAt.toISOString(),
