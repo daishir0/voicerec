@@ -62,8 +62,15 @@ function Wheel({ values, value, onChange, theme, suffix }: {
   const ref = useRef<ScrollView>(null);
   const index = Math.max(0, values.indexOf(value));
   const settling = useRef(false);
+  // ⚠️ **人が回したときだけ値を変える。**
+  //    外から値を合わせるための scrollTo でも onMomentumScrollEnd は飛んでくる。
+  //    それを「人が選んだ」と解釈すると、画面を開いただけで値が書き換わる。
+  //    2026-10-23、全体が選ばれるはずの場所で 1秒 だけが選ばれていたのがこれ。
+  //    時のダイヤルが起動時に発火 → 範囲の外の時刻になり → 開始が終了-1秒へ丸められていた。
+  const touched = useRef(false);
 
-  // 外から値が変わったとき（範囲の丸めなど）は、ダイヤルも合わせる
+  // 外から値が変わったとき（範囲の丸めなど）は、ダイヤルも合わせる。
+  // ⚠️ 自分でスクロールしている最中は触らない。触ると指と競合して引っかかる。
   useEffect(() => {
     if (settling.current) return;
     ref.current?.scrollTo({ y: index * ITEM_H, animated: true });
@@ -71,6 +78,8 @@ function Wheel({ values, value, onChange, theme, suffix }: {
 
   const onEnd = useCallback((e: NativeSyntheticEvent<NativeScrollEvent>) => {
     settling.current = false;
+    if (!touched.current) return;   // 自分で合わせたスクロールは無視する
+    touched.current = false;
     const i = Math.round(e.nativeEvent.contentOffset.y / ITEM_H);
     const v = values[Math.min(values.length - 1, Math.max(0, i))];
     if (v !== undefined && v !== value) onChange(v);
@@ -84,7 +93,7 @@ function Wheel({ values, value, onChange, theme, suffix }: {
         snapToInterval={ITEM_H}
         decelerationRate="fast"
         contentContainerStyle={{ paddingVertical: ITEM_H * Math.floor(VISIBLE / 2) }}
-        onScrollBeginDrag={() => { settling.current = true; }}
+        onScrollBeginDrag={() => { settling.current = true; touched.current = true; }}
         onMomentumScrollEnd={onEnd}
         onScrollEndDrag={onEnd}
       >
@@ -127,6 +136,12 @@ export default function TimeRangePicker({
 }: Props) {
   const [edge, setEdge] = useState<'start' | 'end'>('start');
   const [width, setWidth] = useState(0);
+  // ⚠️ **ドラッグ中は親に渡さない。** 毎フレーム渡すと、ダイヤルが animated で
+  //    追いかけ始め、指の動きと競合して引っかかる（2026-10-23 の指摘）。
+  //    指を離したときに1回だけ確定する。数字の表示はこの一時値から出すので、
+  //    動かしている最中もリアルタイムに見える。
+  const [dragging, setDragging] = useState<Range | null>(null);
+  const shown = dragging ?? value;
 
   // 波形のドラッグとダイヤルは同じ値を編集する。どちらを動かしても他方が追従する。
   const widthRef = useRef(0);
@@ -135,6 +150,7 @@ export default function TimeRangePicker({
   durationRef.current = durationSec;
   const valueRef = useRef(value);
   valueRef.current = value;
+  const draggingRef = useRef<Range | null>(null);
   const dragBase = useRef(value);
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
@@ -142,30 +158,44 @@ export default function TimeRangePicker({
   const dxToSec = useCallback(
     (dx: number) => (dx / Math.max(1, widthRef.current)) * durationRef.current, []);
 
+  const commitDrag = useCallback(() => {
+    const d = draggingRef.current;
+    draggingRef.current = null;
+    setDragging(null);
+    if (d) onChangeRef.current(d);
+  }, []);
+
   const makeHandle = useCallback((which: 'start' | 'end') => PanResponder.create({
     onStartShouldSetPanResponder: () => true,
     onMoveShouldSetPanResponder: (_, g) => Math.abs(g.dx) > 2,
-    onPanResponderGrant: () => { dragBase.current = valueRef.current; },
+    onPanResponderGrant: () => {
+      dragBase.current = valueRef.current;
+      draggingRef.current = valueRef.current;
+      setDragging(valueRef.current);
+    },
     onPanResponderMove: (_, g) => {
       const d = dxToSec(g.dx);
       const base = dragBase.current;
       const total = durationRef.current;
-      if (which === 'start') {
-        const next = Math.min(Math.max(0, base.startSec + d), base.endSec - 1);
-        onChangeRef.current({ startSec: next, endSec: base.endSec });
-      } else {
-        const next = Math.max(Math.min(total, base.endSec + d), base.startSec + 1);
-        onChangeRef.current({ startSec: base.startSec, endSec: next });
-      }
+      const next = which === 'start'
+        ? { startSec: Math.min(Math.max(0, base.startSec + d), base.endSec - 1), endSec: base.endSec }
+        : { startSec: base.startSec, endSec: Math.max(Math.min(total, base.endSec + d), base.startSec + 1) };
+      draggingRef.current = next;
+      setDragging(next);
     },
-  }), [dxToSec]);
+    onPanResponderRelease: commitDrag,
+    onPanResponderTerminate: commitDrag,
+  }), [dxToSec, commitDrag]);
 
   const startPan = useRef(makeHandle('start')).current;
   const endPan = useRef(makeHandle('end')).current;
 
   const endAt = useMemo(() => new Date(startedAt.getTime() + durationSec * 1000), [startedAt, durationSec]);
-  const editing = edge === 'start' ? value.startSec : value.endSec;
+  const editing = edge === 'start' ? shown.startSec : shown.endSec;
   const at = useMemo(() => new Date(startedAt.getTime() + editing * 1000), [startedAt, editing]);
+  // 候補の作り直しを「時・分が変わったときだけ」に限る
+  const atH = at.getHours();
+  const atM = at.getMinutes();
 
   /** 録音が収まっている範囲でだけ回せるようにする（30秒の録音で24時間ぶん回しても意味がない） */
   const hours = useMemo(() => {
@@ -175,24 +205,22 @@ export default function TimeRangePicker({
   }, [startedAt, endAt]);
 
   const minutes = useMemo(() => {
-    const h = at.getHours();
-    const lo = h === startedAt.getHours() ? startedAt.getMinutes() : 0;
-    const hi = h === endAt.getHours() ? endAt.getMinutes() : 59;
+    const lo = atH === startedAt.getHours() ? startedAt.getMinutes() : 0;
+    const hi = atH === endAt.getHours() ? endAt.getMinutes() : 59;
     const out: number[] = [];
     for (let m = lo; m <= hi; m++) out.push(m);
     return out.length ? out : [lo];
-  }, [at, startedAt, endAt]);
+  }, [atH, startedAt, endAt]);
 
   const seconds = useMemo(() => {
-    const h = at.getHours(), m = at.getMinutes();
-    const atStart = h === startedAt.getHours() && m === startedAt.getMinutes();
-    const atEnd = h === endAt.getHours() && m === endAt.getMinutes();
+    const atStart = atH === startedAt.getHours() && atM === startedAt.getMinutes();
+    const atEnd = atH === endAt.getHours() && atM === endAt.getMinutes();
     const lo = atStart ? startedAt.getSeconds() : 0;
     const hi = atEnd ? endAt.getSeconds() : 59;
     const out: number[] = [];
     for (let s = lo; s <= hi; s++) out.push(s);
     return out.length ? out : [lo];
-  }, [at, startedAt, endAt]);
+  }, [atH, atM, startedAt, endAt]);
 
   /** ダイヤルの値から秒オフセットに直し、範囲が裏返らないように整える */
   const setPart = useCallback((part: 'h' | 'm' | 's', v: number) => {
@@ -209,11 +237,25 @@ export default function TimeRangePicker({
     }
   }, [at, startedAt, durationSec, edge, value, onChange]);
 
-  const selectedSec = Math.max(0, value.endSec - value.startSec);
+  const selectedSec = Math.max(0, shown.endSec - shown.startSec);
   const bars = useMemo(
     () => downsample(levels, Math.max(1, Math.floor(width / 3))),
     [levels, width],
   );
+
+  // 棒は選択範囲に依存させない。こうしておけば、ドラッグ中に作り直されない
+  const barViews = useMemo(() => (
+    <View style={styles.bars}>
+      {bars.map((v, i) => (
+        <View key={i} style={{
+          width: 2, marginRight: 1,
+          height: Math.max(2, (v / 100) * (WAVE_H - 20)),
+          backgroundColor: theme.bgTertiary,
+          borderRadius: 1,
+        }} />
+      ))}
+    </View>
+  ), [bars, theme.bgTertiary]);
 
   const PlayBtn = ({ what, label, req }: { what: PlayTarget; label: string; req: PlayRequest }) => {
     const on = playing === what;
@@ -241,9 +283,9 @@ export default function TimeRangePicker({
       {/* いま選んでいる範囲 */}
       <View style={styles.summary}>
         <Text style={[styles.range, { color: theme.text }]}>
-          {formatClock(startedAt, value.startSec)}
+          {formatClock(startedAt, shown.startSec)}
           <Text style={{ color: theme.textSecondary }}> → </Text>
-          {formatClock(startedAt, value.endSec)}
+          {formatClock(startedAt, shown.endSec)}
         </Text>
         <Text style={[styles.hint, { color: theme.textSecondary }]}>
           {formatDuration(selectedSec)} ・ 約 {formatSize(selectedSec * bytesPerSec)}
@@ -255,20 +297,17 @@ export default function TimeRangePicker({
         style={[styles.wave, { backgroundColor: theme.bgSecondary, borderColor: theme.border }]}
         onLayout={(e: LayoutChangeEvent) => setWidth(e.nativeEvent.layout.width)}
       >
-        <View style={styles.bars}>
-          {bars.map((v, i) => {
-            const sec = durationSec * (i / Math.max(1, bars.length));
-            const inRange = sec >= value.startSec && sec <= value.endSec;
-            return (
-              <View key={i} style={{
-                width: 2, marginRight: 1,
-                height: Math.max(2, (v / 100) * (WAVE_H - 20)),
-                backgroundColor: inRange ? theme.accent : theme.bgTertiary,
-                borderRadius: 1,
-              }} />
-            );
-          })}
-        </View>
+        {barViews}
+        {/* 選択範囲は**上に重ねた1枚**で表す。棒そのものの色を変えると、
+            ドラッグのたびに数百個を作り直すことになって重い */}
+        {width > 0 && durationSec > 0 && (
+          <View pointerEvents="none" style={[styles.selection, {
+            left: (shown.startSec / durationSec) * width,
+            width: Math.max(2, ((shown.endSec - shown.startSec) / durationSec) * width),
+            backgroundColor: theme.accent + '44',
+            borderColor: theme.accent,
+          }]} />
+        )}
         {playheadSec != null && durationSec > 0 && (
           <View pointerEvents="none" style={[styles.playhead, {
             left: (playheadSec / durationSec) * width, backgroundColor: theme.red,
@@ -277,11 +316,11 @@ export default function TimeRangePicker({
         {width > 0 && durationSec > 0 && (
           <>
             <View {...startPan.panHandlers}
-              style={[styles.handle, { left: (value.startSec / durationSec) * width - HANDLE_W / 2 }]}>
+              style={[styles.handle, { left: (shown.startSec / durationSec) * width - HANDLE_W / 2 }]}>
               <View style={[styles.handleBar, { backgroundColor: theme.accent }]} />
             </View>
             <View {...endPan.panHandlers}
-              style={[styles.handle, { left: (value.endSec / durationSec) * width - HANDLE_W / 2 }]}>
+              style={[styles.handle, { left: (shown.endSec / durationSec) * width - HANDLE_W / 2 }]}>
               <View style={[styles.handleBar, { backgroundColor: theme.accent }]} />
             </View>
           </>
@@ -349,7 +388,11 @@ const styles = StyleSheet.create({
   },
   handleBar: { width: 5, height: WAVE_H - 16, borderRadius: 3 },
   bars: { flexDirection: 'row', alignItems: 'center', height: '100%', paddingHorizontal: 2 },
-  playhead: { position: 'absolute', top: 0, bottom: 0, width: 2 },
+  playhead: { position: 'absolute', top: 0, bottom: 0, width: 2, zIndex: 2 },
+  selection: {
+    position: 'absolute', top: 0, bottom: 0,
+    borderLeftWidth: 2, borderRightWidth: 2,
+  },
   segment: {
     flexDirection: 'row', marginTop: 14, borderRadius: 10,
     borderWidth: StyleSheet.hairlineWidth, overflow: 'hidden',
