@@ -42,9 +42,10 @@ export function formatDuration(sec: number): string {
   return `${r}秒`;
 }
 
-export function formatClock(base: Date, offsetSec: number): string {
+export function formatClock(base: Date, offsetSec: number, withSeconds = true): string {
   const d = new Date(base.getTime() + offsetSec * 1000);
-  return `${two(d.getHours())}:${two(d.getMinutes())}:${two(d.getSeconds())}`;
+  const hm = `${two(d.getHours())}:${two(d.getMinutes())}`;
+  return withSeconds ? `${hm}:${two(d.getSeconds())}` : hm;
 }
 
 function formatSize(bytes: number): string {

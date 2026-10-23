@@ -827,7 +827,7 @@ export default function ClipScreen() {
                 <Text style={[styles.cardTitle, { color: theme.textSecondary }]}>
                   {formatDuration(coverage.span)}のうち {formatDuration(coverage.voiced)}
                   （{coverage.percent}%）が文字になりました ・ 最後の文字は{' '}
-                  {formatClock(source.startedAt, coverage.lastAt)}
+                  {formatClock(source.startedAt, coverage.lastAt, false)}
                 </Text>
               )}
 
@@ -841,10 +841,13 @@ export default function ClipScreen() {
                         disabled={state.isRecording}
                         hitSlop={6}
                       >
-                        <Text style={[styles.transcriptTime, {
-                          color: state.isRecording ? theme.textSecondary : theme.accent,
-                        }]}>
-                          {formatClock(source.startedAt, line.at)}
+                        <Text
+                          numberOfLines={1}
+                          style={[styles.transcriptTime, {
+                            color: state.isRecording ? theme.textSecondary : theme.accent,
+                          }]}
+                        >
+                          {formatClock(source.startedAt, line.at, false)}
                         </Text>
                       </Pressable>
                       <Text style={[styles.transcript, { color: theme.text, flex: 1 }]}>
@@ -961,5 +964,9 @@ const styles = StyleSheet.create({
   transcriptActions: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   transcript: { fontSize: 14, lineHeight: 22 },
   transcriptLine: { flexDirection: 'row', gap: 10, marginTop: 8 },
-  transcriptTime: { fontSize: 13, fontVariant: ['tabular-nums'], paddingTop: 3, width: 52 },
+  transcriptTime: {
+    // ⚠️ 幅が足りないと時刻の途中で折り返す（52px で「21:23:51」が2行になった）。
+    //    5文字ぶん + 余白。numberOfLines={1} と併せて折り返さないようにする。
+    fontSize: 13, fontVariant: ['tabular-nums'], paddingTop: 3, width: 46,
+  },
 });
