@@ -507,6 +507,12 @@ export default function ClipScreen() {
     }
   }, [source, range, transcribeLocale, updateRecording]);
 
+  /** 文字起こしの結果を消す。録音に保存した分も一緒に消す */
+  const clearTranscript = useCallback(async () => {
+    setTranscript(null);
+    if (source) await updateRecording(source.parts[0].rec.id, { transcript: undefined });
+  }, [source, updateRecording]);
+
   const doUpload = useCallback(async () => {
     if (!source) return;
     setBusy('切り出してアップロード中…');
@@ -712,14 +718,20 @@ export default function ClipScreen() {
                 <Text style={[styles.cardTitle, { color: theme.textSecondary }]}>
                   文字起こし（端末内{transcript.ms > 0 ? ` / ${(transcript.ms / 1000).toFixed(1)}秒` : ''}）
                 </Text>
-                <Pressable
-                  onPress={async () => {
-                    await Clipboard.setStringAsync(transcript.text);
-                    Alert.alert('コピーしました');
-                  }}
-                >
-                  <Text style={{ color: theme.accent, fontSize: 13 }}>コピー</Text>
-                </Pressable>
+                <View style={styles.transcriptActions}>
+                  <Pressable onPress={clearTranscript} hitSlop={8}>
+                    <Text style={{ color: theme.textSecondary, fontSize: 13 }}>クリア</Text>
+                  </Pressable>
+                  <Pressable
+                    onPress={async () => {
+                      await Clipboard.setStringAsync(transcript.text);
+                      Alert.alert('コピーしました');
+                    }}
+                    hitSlop={8}
+                  >
+                    <Text style={{ color: theme.accent, fontSize: 13 }}>コピー</Text>
+                  </Pressable>
+                </View>
               </View>
               <Text style={[styles.transcript, { color: theme.text }]}>
                 {transcript.text || '（音声から文字を取り出せませんでした）'}
@@ -824,5 +836,6 @@ const styles = StyleSheet.create({
   },
   busyRow: { flexDirection: 'row', alignItems: 'center', justifyContent: 'center', paddingVertical: 8 },
   transcriptHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
+  transcriptActions: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   transcript: { fontSize: 14, lineHeight: 22 },
 });
