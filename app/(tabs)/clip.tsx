@@ -22,7 +22,10 @@ import TimeRangePicker, {
   formatDuration, type PlayRequest, type PlayTarget, type Range,
 } from '@/components/TimeRangePicker';
 import { CAF_PRESET, CAF_HIGH_QUALITY_PRESET } from '@/services/audio-recorder';
-import { LevelTrackWriter, loadLevels, meteringToLevel } from '@/services/level-track';
+import { LevelTrackWriter, meteringToLevel } from '@/services/level-track';
+import {
+  buildSessions, loadSessionLevels, piecesForRange, type ClipPiece, type Session,
+} from '@/services/session';
 import { createClipForUpload, transcribeRange } from '@/services/clip-service';
 import { deleteLevels } from '@/services/level-track';
 import { formatBytes } from '@/services/retention';
@@ -77,13 +80,12 @@ export default function ClipScreen() {
   const filenameRef = useRef<string>('');
   const lastSecondRef = useRef(-1);
 
-  const longRecordings = useMemo(
-    () => recordings.filter(r => r.kind === 'long').slice(0, 20),
-    [recordings],
-  );
+  // 「ここまでを確定する」で分かれたファイルは、1本の録音として扱う。
+  // 境目は実装の都合であって、利用者には関係がない。
+  const sessions = useMemo(() => buildSessions(recordings).slice(0, 20), [recordings]);
   const source = useMemo(
-    () => longRecordings.find(r => r.id === sourceId) ?? longRecordings[0] ?? null,
-    [longRecordings, sourceId],
+    () => sessions.find(s => s.id === sourceId) ?? sessions[0] ?? null,
+    [sessions, sourceId],
   );
 
   // 再生して確かめる。
@@ -98,6 +100,8 @@ export default function ClipScreen() {
   const [playing, setPlaying] = useState<PlayTarget | null>(null);
   const stopAtRef = useRef<number | null>(null);
   const loadedUriRef = useRef<string | null>(null);
+  // またぐファイルの並びと、いまどれを鳴らしているか
+  const playQueueRef = useRef<{ pieces: ClipPiece[]; index: number } | null>(null);
 
 
   // 中断と経路変更を見張る。録り直しは下で定義する関数に任せる（ref 経由）。
@@ -168,11 +172,11 @@ export default function ClipScreen() {
   useEffect(() => {
     let alive = true;
     (async () => {
-      if (!source?.levelsUri) { setLevels(new Uint8Array(0)); return; }
-      const lv = await loadLevels(source.levelsUri);
+      if (!source) { setLevels(new Uint8Array(0)); return; }
+      const lv = await loadSessionLevels(source);
       if (!alive) return;
       setLevels(lv);
-      const total = source.duration / 1000;
+      const total = source.totalSec;
       const saved = source.transcript;
       if (saved) {
         setRange({ startSec: saved.startSec, endSec: saved.endSec });
@@ -183,10 +187,11 @@ export default function ClipScreen() {
       }
     })();
     return () => { alive = false; };
-  }, [source?.id, source?.levelsUri, source?.duration, source?.transcript]);
+  }, [source?.id, source?.totalSec, source?.transcript]);
 
   const stopPlay = useCallback(() => {
     stopAtRef.current = null;
+    playQueueRef.current = null;
     setPlaying(null);
     // 鳴っていないのに pause を呼ばない（呼ぶだけでセッションに触る）
     if (!loadedUriRef.current) return;
@@ -200,18 +205,22 @@ export default function ClipScreen() {
       await setAudioModeAsync({
         allowsRecording: false, playsInSilentMode: true, interruptionMode: 'mixWithOthers',
       });
-      if (loadedUriRef.current !== source.uri) {
-        player.replace({ uri: source.uri });
-        loadedUriRef.current = source.uri;
+      // 範囲が複数ファイルにまたがるときは、順に読み替えて鳴らす
+      const pieces = piecesForRange(source, req.fromSec, req.toSec ?? source.totalSec);
+      if (pieces.length === 0) { stopPlay(); return; }
+      playQueueRef.current = { pieces, index: 0 };
+      if (loadedUriRef.current !== pieces[0].uri) {
+        player.replace({ uri: pieces[0].uri });
+        loadedUriRef.current = pieces[0].uri;
         // replace の直後は読み込みが終わっていない。少しだけ待つ
         for (let i = 0; i < 30 && !player.isLoaded; i++) {
           await new Promise(r => setTimeout(r, 50));
         }
       }
       // toSec が null なら、止めるまで鳴らす（端の確認は人によって聴きたい長さが違う）
-      stopAtRef.current = req.toSec;
+      stopAtRef.current = pieces[0].endSec;
       setPlaying(req.what);
-      await player.seekTo(req.fromSec);
+      await player.seekTo(pieces[0].startSec);
       player.play();
       addDebugLog(`再生 ${req.fromSec.toFixed(1)}秒から` +
         `${req.toSec != null ? ` ${req.toSec.toFixed(1)}秒まで` : '（停止するまで）'}` +
@@ -226,10 +235,32 @@ export default function ClipScreen() {
   // 範囲の終わりまで来たら止める
   useEffect(() => {
     if (playing == null) return;
-    // 端からの再生（stopAt が null）でも、ファイルの終わりまで来たら止める
-    if (playerStatus.didJustFinish) { stopPlay(); return; }
-    if (stopAtRef.current != null && playerStatus.currentTime >= stopAtRef.current) stopPlay();
-  }, [playing, playerStatus.currentTime, playerStatus.didJustFinish, stopPlay]);
+    const q = playQueueRef.current;
+    const reachedEnd = playerStatus.didJustFinish
+      || (stopAtRef.current != null && playerStatus.currentTime >= stopAtRef.current);
+    if (!reachedEnd) return;
+    // またいだ先がまだあれば、そのファイルに読み替えて続ける
+    if (q && q.index + 1 < q.pieces.length) {
+      const next = q.pieces[q.index + 1];
+      q.index += 1;
+      (async () => {
+        try {
+          player.replace({ uri: next.uri });
+          loadedUriRef.current = next.uri;
+          for (let i = 0; i < 30 && !player.isLoaded; i++) {
+            await new Promise(r => setTimeout(r, 50));
+          }
+          stopAtRef.current = next.endSec;
+          await player.seekTo(next.startSec);
+          player.play();
+        } catch {
+          stopPlay();
+        }
+      })();
+      return;
+    }
+    stopPlay();
+  }, [playing, playerStatus.currentTime, playerStatus.didJustFinish, player, stopPlay]);
 
   // 選ぶ録音を変えたら再生は止める（音源の読み直しは次に鳴らすときでよい）
   useEffect(() => { stopPlay(); }, [source?.id, stopPlay]);
@@ -259,6 +290,8 @@ export default function ClipScreen() {
     if (!dir.exists) await FileSystem.makeDirectoryAsync(RECORDINGS_DIR, { intermediates: true });
 
     const now = new Date();
+    // 「ここまでを確定する」から続けて呼ばれたときは、同じセッションのまま
+    if (!sessionIdRef.current) sessionIdRef.current = `s-${now.getTime()}`;
     startedAtRef.current = now;
     filenameRef.current = `${stamp(now)}.caf`;
     lastSecondRef.current = -1;
@@ -279,6 +312,9 @@ export default function ClipScreen() {
   }, [recorder, activeRecorder, setActiveRecorder, stopPlay, addDebugLog]);
 
   /** いま録っているものを確定して保存する。返り値がその録音。 */
+  // 区切って続けるとき、新しいファイルに引き継ぐセッションID
+  const sessionIdRef = useRef<string | null>(null);
+
   const finalizeRecording = useCallback(async (): Promise<RecordingEntry | null> => {
     const startedAt = startedAtRef.current;
     const writer = writerRef.current;
@@ -318,9 +354,10 @@ export default function ClipScreen() {
         kind: 'long',
         startedAt: startedAt.toISOString(),
         levelsUri: writer?.uri,
+        sessionId: sessionIdRef.current ?? undefined,
       };
       await addRecording(entry);
-      setSourceId(entry.id);
+      setSourceId(entry.sessionId ?? entry.id);
       await log(`Long recording saved: ${filename} ${fileSize}B ${durationMs}ms`);
       void runRetention();
       return entry;
@@ -340,7 +377,7 @@ export default function ClipScreen() {
    * 閉じたらその場で録り直すので、止まるのは 1 秒に満たない。
    */
   const splitAndContinue = useCallback(async () => {
-    setBusy('区切っています…');
+    setBusy('確定しています…');
     try {
       const entry = await finalizeRecording();
       if (entry) await startRecording();
@@ -351,6 +388,8 @@ export default function ClipScreen() {
 
   const stopRecording = useCallback(async () => {
     await finalizeRecording();
+    // 止めたらセッションは終わり。次の録音は別の1本になる
+    sessionIdRef.current = null;
   }, [finalizeRecording]);
 
   const stopRecordingRef = useRef<() => Promise<void>>(async () => {});
@@ -366,7 +405,7 @@ export default function ClipScreen() {
     try {
       await finalizeRecording();
       await startRecording();
-      setNotice(`${why}ため、いったん区切って録音を続けています。`);
+      setNotice(`${why}ため、いったん確定して録音を続けています（1本の録音として扱われます）。`);
       addDebugLog(`自動で録り直しました（${why}）`);
     } catch (e: any) {
       setNotice(`${why}ため録音が止まりました。「録音を始める」で再開してください。`);
@@ -380,19 +419,22 @@ export default function ClipScreen() {
     if (!source) return;
     Alert.alert(
       'この録音を削除しますか',
-      `${new Date(source.startedAt ?? source.createdAt).toLocaleString('ja-JP')} から ` +
-      `${formatDuration(source.duration / 1000)}\n切り出し済みのクリップは残ります。`,
+      `${source.startedAt.toLocaleString('ja-JP')} から ` +
+      `${formatDuration(source.totalSec)}\n切り出し済みのクリップは残ります。`,
       [
         { text: 'やめる', style: 'cancel' },
         {
           text: '削除', style: 'destructive',
           onPress: async () => {
             stopPlay();
-            try {
-              await FileSystem.deleteAsync(source.uri, { idempotent: true });
-            } catch { /* ファイルが無くても一覧からは消す */ }
-            await deleteLevels(source.levelsUri);
-            await deleteRecording(source.id);
+            // 区切られていても、利用者にとっては1本。まとめて消す
+            for (const part of source.parts) {
+              try {
+                await FileSystem.deleteAsync(part.rec.uri, { idempotent: true });
+              } catch { /* ファイルが無くても一覧からは消す */ }
+              await deleteLevels(part.rec.levelsUri);
+              await deleteRecording(part.rec.id);
+            }
             setSourceId(null);
           },
         },
@@ -409,7 +451,7 @@ export default function ClipScreen() {
       setTranscript({ text: r.text, engine: r.engine, ms: r.elapsedMs });
       if (r.text) {
         // 画面を離れても残るように録音に持たせる
-        await updateRecording(source.id, {
+        await updateRecording(source.parts[0].rec.id, {
           transcript: {
             text: r.text, engine: r.engine,
             startSec: range.startSec, endSec: range.endSec,
@@ -434,7 +476,7 @@ export default function ClipScreen() {
       await addRecording(clip);
       uploadPending();
       Alert.alert('送信しました',
-        `${clip.displayName}（${formatDuration((range.endSec - range.startSec))} / ${formatBytes(clip.fileSize)}）\n` +
+        `${clip.displayName}（${formatDuration(clip.duration / 1000)} / ${formatBytes(clip.fileSize)}）\n` +
         'サーバー側で文字起こしされます。');
     } catch (e: any) {
       Alert.alert('切り出しに失敗しました', e?.message ?? String(e));
@@ -443,8 +485,18 @@ export default function ClipScreen() {
     }
   }, [source, range, addRecording, uploadPending]);
 
+  // ⚠️ プレイヤーの currentTime は**いま鳴らしているファイルの中の位置**。
+  //    セッションは複数ファイルに分かれうるので、全体の時間に直さないと巻き戻って見える。
+  const playheadSec = useMemo(() => {
+    if (!playing) return null;
+    const q = playQueueRef.current;
+    const piece = q?.pieces[q.index];
+    if (!piece) return playerStatus.currentTime;
+    return piece.sessionStartSec + Math.max(0, playerStatus.currentTime - piece.startSec);
+  }, [playing, playerStatus.currentTime]);
+
   const elapsed = Math.floor((state.durationMillis || 0) / 1000);
-  const totalSec = source ? source.duration / 1000 : 0;
+  const totalSec = source ? source.totalSec : 0;
 
   return (
     <ScrollView style={{ backgroundColor: theme.bg }} contentContainerStyle={styles.content}>
@@ -486,11 +538,12 @@ export default function ClipScreen() {
           >
             <Ionicons name="cut-outline" size={18} color={theme.accent} />
             <Text style={{ color: theme.accent, fontSize: 14, fontWeight: '600' }}>
-              ここまでを区切って範囲を選ぶ
+              ここまでを確定する
             </Text>
           </Pressable>
           <Text style={[styles.note, { color: theme.textSecondary }]}>
-            区切ったあとも録音は続きます（止まるのは1秒未満）。
+            確定したあとも録音は続きます（止まるのは1秒未満）。確定した分は、
+            そのまま続きと1本の録音として扱われます。
             {inputName ? `\nマイク: ${inputName}` : ''}
             {freeBytes != null ? `\n空き ${formatBytes(freeBytes)}（${formatHours(freeBytes, 2048)}ぶん）` : ''}
             {coexistWithOtherApps ? '' : '\n他アプリが音を鳴らすと録音が止まります（設定で変えられます）'}
@@ -511,18 +564,22 @@ export default function ClipScreen() {
           <View style={[styles.card, { backgroundColor: theme.bgSecondary, borderColor: theme.border }]}>
             <View style={styles.sourceHeader}>
               <Pressable
-                onPress={() => longRecordings.length > 1 && setPicking(true)}
+                onPress={() => sessions.length > 1 && setPicking(true)}
                 style={styles.sourcePick}
               >
                 <Text style={[styles.cardTitle, { color: theme.textSecondary }]}>
-                  {new Date(source.startedAt ?? source.createdAt).toLocaleString('ja-JP')} から
+                  {source.startedAt.toLocaleString('ja-JP')} から
                   {' '}{formatDuration(totalSec)} ・ {formatBytes(source.fileSize)}
                 </Text>
-                {longRecordings.length > 1 && (
+                {sessions.length > 1 && (
                   <Ionicons name="chevron-down" size={14} color={theme.accent} />
                 )}
               </Pressable>
-              <Pressable onPress={() => toggleProtected(source.id)} hitSlop={10} style={styles.iconBtn}>
+              <Pressable
+                onPress={() => source.parts.forEach(p => toggleProtected(p.rec.id))}
+                hitSlop={10}
+                style={styles.iconBtn}
+              >
                 <Ionicons
                   name={source.protected ? 'star' : 'star-outline'}
                   size={18}
@@ -540,13 +597,13 @@ export default function ClipScreen() {
             )}
             <TimeRangePicker
               levels={levels}
-              startedAt={new Date(source.startedAt ?? source.createdAt)}
+              startedAt={source.startedAt}
               durationSec={totalSec}
               value={range}
               onChange={setRange}
               theme={theme}
-              bytesPerSec={source.duration > 0 ? source.fileSize / (source.duration / 1000) : 2048}
-              playheadSec={playing ? playerStatus.currentTime : null}
+              bytesPerSec={source.audioSec > 0 ? source.fileSize / source.audioSec : 2048}
+              playheadSec={playheadSec}
               playing={playing}
               onPlay={startPlay}
               onStop={stopPlay}
@@ -629,7 +686,7 @@ export default function ClipScreen() {
               </Pressable>
             </View>
             <ScrollView style={{ maxHeight: 380 }}>
-              {longRecordings.map(r => {
+              {sessions.map(r => {
                 const on = r.id === source?.id;
                 return (
                   <Pressable
@@ -643,13 +700,13 @@ export default function ClipScreen() {
                       color={on ? theme.accent : 'transparent'}
                     />
                     <Text style={{ color: theme.text, fontSize: 14, flex: 1 }}>
-                      {new Date(r.startedAt ?? r.createdAt).toLocaleString('ja-JP', {
+                      {r.startedAt.toLocaleString('ja-JP', {
                         month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit',
                       })}
                     </Text>
                     {r.protected && <Ionicons name="star" size={13} color={theme.accent} />}
                     <Text style={{ color: theme.textSecondary, fontSize: 12 }}>
-                      {formatDuration(r.duration / 1000)}
+                      {formatDuration(r.totalSec)}
                     </Text>
                     <Text style={{ color: theme.textSecondary, fontSize: 12, width: 64, textAlign: 'right' }}>
                       {formatBytes(r.fileSize)}

@@ -45,6 +45,8 @@ export type TrimResult = {
   durationSec: number;
   /** 頼んだ範囲の長さ */
   requestedSec?: number;
+  /** 繋いだファイルの数（clipRanges* のとき） */
+  partCount?: number;
   elapsedMs: number;
 };
 
@@ -97,6 +99,13 @@ declare class VoicerecAudio extends NativeModule<Events> {
   inspect(uri: string): Promise<AudioFileInfo>;
   trimToWav(uri: string, startSec: number, endSec: number, outUri: string): Promise<TrimResult>;
   trimToM4a(uri: string, startSec: number, endSec: number, outUri: string): Promise<TrimResult>;
+  /**
+   * 複数ファイルの一部ずつを時間順に繋いで1本に切り出す。
+   * 「ここまでを確定する」で分かれた録音をまたいだ範囲に使う。
+   * 引数は平行な配列（uris[i] の startSec[i]〜endSec[i] を順に繋ぐ）。
+   */
+  clipRangesToWav(uris: string[], starts: number[], ends: number[], outUri: string): Promise<TrimResult>;
+  clipRangesToM4a(uris: string[], starts: number[], ends: number[], outUri: string): Promise<TrimResult>;
   /** engine: 'auto'（既定・iOS26+なら SpeechAnalyzer）/ 'analyzer' / 'sf' */
   transcribe(uri: string, locale: string, engine: 'auto' | 'analyzer' | 'sf'): Promise<TranscribeResult>;
   prepareLocale(locale: string): Promise<PrepareLocaleResult>;

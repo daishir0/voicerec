@@ -109,6 +109,25 @@ public class VoicerecAudioModule: Module {
                                settings: Self.aacSettings)
     }
 
+    // ── 複数のファイルをまたいで切り出す ────────────────
+    // 「ここまでを確定する」で録音を区切ると、1回の録音が2つ以上のファイルに分かれる。
+    // 利用者にとっては1本の録音なので、ファイルの境目をまたぐ範囲も選べなければならない。
+    // AVMutableComposition に順番に差し込めば、1本の音声として読み出せる。
+    //
+    // ⚠️ 引数は**平行な配列**で受ける。辞書の配列は Expo Modules の変換に依存するので、
+    //    実機でしか試せない場所で冒険しない。
+    AsyncFunction("clipRangesToWav") { (uris: [String], starts: [Double], ends: [Double], outUri: String) -> [String: Any] in
+      try await Self.transcodeMany(uris: uris, starts: starts, ends: ends,
+                                   dst: Self.fileURL(outUri), fileType: .wav,
+                                   settings: Self.pcmSettings)
+    }
+
+    AsyncFunction("clipRangesToM4a") { (uris: [String], starts: [Double], ends: [Double], outUri: String) -> [String: Any] in
+      try await Self.transcodeMany(uris: uris, starts: starts, ends: ends,
+                                   dst: Self.fileURL(outUri), fileType: .m4a,
+                                   settings: Self.aacSettings)
+    }
+
     // ── 4. 端末内で文字起こしする ────────────────────────
     // iOS 26+ は SpeechAnalyzer（長時間向け・モデルは OS が持つ）。
     // それ以前は SFSpeechRecognizer を 55 秒ずつに切って回す（1セッション1分の上限）。
@@ -389,6 +408,58 @@ public class VoicerecAudioModule: Module {
     }
   }
 
+  /// 複数のファイルの一部ずつを、時間順に繋いで1本に書き出す。
+  ///
+  /// 録音を区切ると1回の録音が複数ファイルになるが、利用者にとっては1本なので、
+  /// 境目をまたぐ範囲も扱えなければならない。
+  private static func transcodeMany(uris: [String], starts: [Double], ends: [Double],
+                                    dst: URL, fileType: AVFileType,
+                                    settings: [String: Any]) async throws -> [String: Any] {
+    let began = Date()
+    guard uris.count == starts.count, uris.count == ends.count, !uris.isEmpty else {
+      throw Exception(name: "BadArguments",
+                      description: "uris/starts/ends の数が合いません (\(uris.count)/\(starts.count)/\(ends.count))")
+    }
+
+    let comp = AVMutableComposition()
+    guard let compTrack = comp.addMutableTrack(withMediaType: .audio,
+                                               preferredTrackID: kCMPersistentTrackID_Invalid) else {
+      throw Exception(name: "CompositionFailed", description: "合成用のトラックを作れません")
+    }
+
+    var cursor = CMTime.zero
+    var used = 0
+    for i in 0..<uris.count {
+      let url = fileURL(uris[i])
+      let asset = AVURLAsset(url: url)
+      guard let track = try await asset.loadTracks(withMediaType: .audio).first else { continue }
+      // 録音中のファイルは長さが 0 と返る。そのときは頼まれた範囲をそのまま読む
+      let totalRaw = CMTimeGetSeconds(try await asset.load(.duration))
+      let total = totalRaw.isFinite && totalRaw > 0 ? totalRaw : 0
+      let from = max(0, starts[i])
+      let to = total > 0 ? min(ends[i] > 0 ? ends[i] : total, total) : max(ends[i], from)
+      guard to > from else { continue }
+      let range = CMTimeRange(start: CMTime(seconds: from, preferredTimescale: 600),
+                              end: CMTime(seconds: to, preferredTimescale: 600))
+      try compTrack.insertTimeRange(range, of: track, at: cursor)
+      cursor = CMTimeAdd(cursor, range.duration)
+      used += 1
+    }
+    guard used > 0, cursor > .zero else {
+      throw Exception(name: "EmptyRange", description: "切り出せる範囲がありませんでした")
+    }
+
+    var out = try await runReaderWriter(asset: comp, track: compTrack,
+                                        timeRange: CMTimeRange(start: .zero, duration: cursor),
+                                        dst: dst, fileType: fileType, settings: settings)
+    out["elapsedMs"] = Int(Date().timeIntervalSince(began) * 1000)
+    out["startSec"] = 0.0
+    out["endSec"] = CMTimeGetSeconds(cursor)
+    out["requestedSec"] = CMTimeGetSeconds(cursor)
+    out["partCount"] = used
+    return out
+  }
+
   /// 指定範囲を読み出して書き直す。AVAssetExportSession ではサンプルレートを
   /// 指定できないので、reader/writer で自分で回す。
   private static func transcode(src: URL, dst: URL, startSec: Double, endSec: Double,
@@ -412,10 +483,27 @@ public class VoicerecAudioModule: Module {
                       description: "範囲が空です (\(from) → \(to), 全体 \(total)秒)")
     }
 
+    var out = try await runReaderWriter(
+      asset: asset, track: track,
+      timeRange: CMTimeRange(start: CMTime(seconds: from, preferredTimescale: 600),
+                             end: CMTime(seconds: to, preferredTimescale: 600)),
+      dst: dst, fileType: fileType, settings: settings)
+    out["startSec"] = from
+    out["endSec"] = to
+    out["requestedSec"] = to - from
+    out["elapsedMs"] = Int(Date().timeIntervalSince(began) * 1000)
+    return out
+  }
+
+  /// 資産の一部を読み出して書き直す共通処理。単数ファイルでも合成でも同じ経路を通す。
+  ///
+  /// ⚠️ AVAssetExportSession ではサンプルレートを指定できないので、reader/writer で自分で回す。
+  private static func runReaderWriter(asset: AVAsset, track: AVAssetTrack,
+                                      timeRange: CMTimeRange, dst: URL,
+                                      fileType: AVFileType,
+                                      settings: [String: Any]) async throws -> [String: Any] {
     let reader = try AVAssetReader(asset: asset)
-    reader.timeRange = CMTimeRange(
-      start: CMTime(seconds: from, preferredTimescale: 600),
-      end: CMTime(seconds: to, preferredTimescale: 600))
+    reader.timeRange = timeRange
     // 読み出しは必ずリニアPCMに展開する（圧縮のままでは書き手に渡せない）
     let output = AVAssetReaderTrackOutput(track: track, outputSettings: pcmSettings)
     output.alwaysCopiesSampleData = false
@@ -465,14 +553,15 @@ public class VoicerecAudioModule: Module {
     let size = (try? FileManager.default.attributesOfItem(atPath: dst.path)[.size] as? NSNumber)??.intValue ?? 0
     // 書けた実際の長さ。録音中のファイルからだと、頼んだ範囲より短くなることがある
     let wrote = CMTimeGetSeconds(try await AVURLAsset(url: dst).load(.duration))
+    let span = CMTimeGetSeconds(timeRange.duration)
     return [
       "uri": dst.path,
       "fileSize": size,
-      "startSec": from,
-      "endSec": to,
-      "durationSec": wrote.isFinite && wrote > 0 ? wrote : to - from,
-      "requestedSec": to - from,
-      "elapsedMs": Int(Date().timeIntervalSince(began) * 1000)
+      "durationSec": wrote.isFinite && wrote > 0 ? wrote : span,
+      "startSec": 0.0,
+      "endSec": span,
+      "requestedSec": span,
+      "elapsedMs": 0
     ]
   }
 }

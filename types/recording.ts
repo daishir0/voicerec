@@ -31,6 +31,12 @@ export interface RecordingEntry {
   startedAt?: string;
   /** 毎秒の音量（波形タイムライン）を書いたファイル。無ければ波形は出ない */
   levelsUri?: string;
+  /**
+   * 「ここまでを確定する」で区切られた録音は、同じセッションIDを持つ。
+   * 利用者にとっては1本の録音なので、範囲選択はファイルの境目をまたげる。
+   * この仕組みより前の録音には無いので、その場合は時刻の連続性で判断する。
+   */
+  sessionId?: string;
   /** true なら自動削除の対象から外す */
   protected?: boolean;
 

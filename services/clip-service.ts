@@ -12,6 +12,7 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import VoicerecAudio, { type TranscribeResult } from '@/modules/voicerec-audio';
 import { RecordingEntry } from '@/types/recording';
+import { audioSecondsIn, piecesForRange, type Session } from './session';
 
 export const CLIPS_DIR = FileSystem.documentDirectory + 'clips/';
 
@@ -30,14 +31,13 @@ export function stampOf(d: Date): string {
 }
 
 /** 切り出しの開始絶対時刻 */
-export function clipStartedAt(source: RecordingEntry, range: ClipRange): Date {
-  const base = new Date(source.startedAt ?? source.createdAt);
-  return new Date(base.getTime() + range.startSec * 1000);
+export function clipStartedAt(session: Session, range: ClipRange): Date {
+  return new Date(session.startedAt.getTime() + range.startSec * 1000);
 }
 
-export function clipFilename(source: RecordingEntry, range: ClipRange, ext: string): string {
+export function clipFilename(session: Session, range: ClipRange, ext: string): string {
   const seconds = Math.max(1, Math.round(range.endSec - range.startSec));
-  return `${stampOf(clipStartedAt(source, range))}_${seconds}s${ext}`;
+  return `${stampOf(clipStartedAt(session, range))}_${seconds}s${ext}`;
 }
 
 function generateId(): string {
@@ -60,14 +60,18 @@ async function ensureDir(): Promise<void> {
  * 返り値をそのまま addRecording() → uploadPending() に渡せば、いつもの経路で送られる。
  */
 export async function createClipForUpload(
-  source: RecordingEntry,
+  session: Session,
   range: ClipRange,
 ): Promise<RecordingEntry> {
   await ensureDir();
-  const filename = clipFilename(source, range, '.m4a');
+  const filename = clipFilename(session, range, '.m4a');
   const dest = CLIPS_DIR + filename;
-  const trimmed = await VoicerecAudio.trimToM4a(source.uri, range.startSec, range.endSec, dest);
-  const startedAt = clipStartedAt(source, range);
+  // 区切られていてもファイルの境目をまたいで1本に繋ぐ
+  const pieces = piecesForRange(session, range.startSec, range.endSec);
+  if (pieces.length === 0) throw new Error('選んだ範囲に音がありません');
+  const trimmed = await VoicerecAudio.clipRangesToM4a(
+    pieces.map(p => p.uri), pieces.map(p => p.startSec), pieces.map(p => p.endSec), dest);
+  const startedAt = clipStartedAt(session, range);
 
   return {
     id: generateId(),
@@ -81,7 +85,7 @@ export async function createClipForUpload(
     createdAt: new Date().toISOString(),
     kind: 'clip',
     startedAt: startedAt.toISOString(),
-    sourceId: source.id,
+    sourceId: session.parts[0].rec.id,
     clipStartSec: range.startSec,
     clipEndSec: range.endSec,
   };
@@ -92,7 +96,7 @@ export async function createClipForUpload(
  * （どちらのエンジンも 16kHz モノラルを好み、SFSpeech は WAV か MP3 しか受けない）。
  */
 export async function transcribeRange(
-  source: RecordingEntry,
+  session: Session,
   range: ClipRange,
   locale: string,
   engine: 'auto' | 'analyzer' | 'sf' = 'auto',
@@ -100,7 +104,10 @@ export async function transcribeRange(
   await ensureDir();
   const wav = CLIPS_DIR + `tmp-${Date.now()}.wav`;
   try {
-    await VoicerecAudio.trimToWav(source.uri, range.startSec, range.endSec, wav);
+    const pieces = piecesForRange(session, range.startSec, range.endSec);
+    if (pieces.length === 0) throw new Error('選んだ範囲に音がありません');
+    await VoicerecAudio.clipRangesToWav(
+      pieces.map(p => p.uri), pieces.map(p => p.startSec), pieces.map(p => p.endSec), wav);
     return await VoicerecAudio.transcribe(wav, locale, engine);
   } finally {
     // 文字起こし用の WAV は残さない（16kHz/16bit で1分あたり約2MB ある）
@@ -110,6 +117,11 @@ export async function transcribeRange(
       // 消せなくても致命的ではない
     }
   }
+}
+
+/** 選んだ範囲に実際に音がある秒数（区切りの隙間を除く） */
+export function clipAudioSeconds(session: Session, range: ClipRange): number {
+  return audioSecondsIn(session, range.startSec, range.endSec);
 }
 
 /** 端末内の音声認識に出せる言語。SpeechTranscriber が対応しているもののうち実用的な範囲。 */
