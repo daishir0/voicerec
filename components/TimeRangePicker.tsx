@@ -191,7 +191,13 @@ export default function TimeRangePicker({
   const endPan = useRef(makeHandle('end')).current;
 
   const endAt = useMemo(() => new Date(startedAt.getTime() + durationSec * 1000), [startedAt, durationSec]);
-  const editing = edge === 'start' ? shown.startSec : shown.endSec;
+  // ⚠️ **ダイヤルは確定済みの値だけを見る。**
+  //    ここを shown（ドラッグ中の値）にすると、いま編集している側の端をつまんだときだけ、
+  //    毎フレーム index が変わって scrollTo(animated) が走り、指と競合して引っかかる。
+  //    もう一方の端は index が変わらないので滑らかに見え、症状が片側だけに出ていた
+  //    （2026-10-23 の指摘）。上の時刻表示は shown から出しているので、
+  //    動かしている最中の数字はリアルタイムに変わる。
+  const editing = edge === 'start' ? value.startSec : value.endSec;
   const at = useMemo(() => new Date(startedAt.getTime() + editing * 1000), [startedAt, editing]);
   // 候補の作り直しを「時・分が変わったときだけ」に限る
   const atH = at.getHours();
