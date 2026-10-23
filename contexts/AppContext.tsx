@@ -208,7 +208,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       // URI修復: iOSコンテナUUID変更に対応
       if (savedRecordings.length) {
-        const fixed = await repairRecordingUris(savedRecordings);
+        const fixed = await repairRecordingUris(migrateKinds(savedRecordings));
         setRecordings(fixed);
         recordingsRef.current = fixed;
       }
@@ -250,13 +250,36 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     await log(msg);
   }, [addDebugLog]);
 
+  /**
+   * 古い録音の種別を直す。
+   * local を導入する前の長時間録音は uploaded として保存されていて、
+   * 一覧では「サーバーへ送ったもの」に並び、送信済みのバッジが付いてしまう。
+   */
+  function migrateKinds(recs: RecordingEntry[]): RecordingEntry[] {
+    let changed = false;
+    const out = recs.map(r => {
+      if (r.kind === 'long' && r.uploadStatus === 'uploaded') {
+        changed = true;
+        return { ...r, uploadStatus: 'local' as const };
+      }
+      return r;
+    });
+    if (changed) addDebugLog('古い長時間録音の種別を直しました');
+    return out;
+  }
+
   // URI修復: iOSコンテナUUID変更で保存済み絶対パスが無効になった場合に再構築
   async function repairRecordingUris(recs: RecordingEntry[]): Promise<RecordingEntry[]> {
     let changed = false;
     const repaired = await Promise.all(
       recs.map(async (rec) => {
-        // 送信済みは修復不要。素材（local）は読めないと困るので修復する
-        if (rec.uploadStatus === 'uploaded') return rec;
+        // ⚠️ **状態で判断して飛ばさない。**
+        //    以前は「送信済みは修復不要」として uploaded を飛ばしていたが、
+        //    local を導入する前の長時間録音は uploaded として保存されていたため、
+        //    アプリを入れ直してパスが変わっても永久に直らなかった。
+        //    その結果、ファイルはあるのに「見つからない（0B）」になり、
+        //    文字起こしが失敗していた（2026-10-24 に判明）。
+        //    下で「いま読めるか」を見ているので、全部通しても無駄はない。
 
         // 現在のURIが有効ならそのまま
         try {
