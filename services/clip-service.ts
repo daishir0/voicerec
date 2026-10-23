@@ -12,7 +12,9 @@
 import * as FileSystem from 'expo-file-system/legacy';
 import VoicerecAudio, { type TranscribeResult } from '@/modules/voicerec-audio';
 import { RecordingEntry } from '@/types/recording';
-import { audioSecondsIn, piecesForRange, type Session } from './session';
+import {
+  audioSecondsIn, piecesForRange, piecesForRangeHealthy, type PartHealth, type Session,
+} from './session';
 
 export const CLIPS_DIR = FileSystem.documentDirectory + 'clips/';
 
@@ -62,13 +64,16 @@ async function ensureDir(): Promise<void> {
 export async function createClipForUpload(
   session: Session,
   range: ClipRange,
+  health?: PartHealth[],
 ): Promise<RecordingEntry> {
   await ensureDir();
   const filename = clipFilename(session, range, '.m4a');
   const dest = CLIPS_DIR + filename;
   // 区切られていてもファイルの境目をまたいで1本に繋ぐ
-  const pieces = piecesForRange(session, range.startSec, range.endSec);
-  if (pieces.length === 0) throw new Error('選んだ範囲に音がありません');
+  const pieces = health
+    ? piecesForRangeHealthy(session, range.startSec, range.endSec, health)
+    : piecesForRange(session, range.startSec, range.endSec);
+  if (pieces.length === 0) throw new Error('選んだ範囲に、読める音声がありません');
   const trimmed = await VoicerecAudio.clipRangesToM4a(
     pieces.map(p => p.uri), pieces.map(p => p.startSec), pieces.map(p => p.endSec), dest);
   const startedAt = clipStartedAt(session, range);
@@ -104,12 +109,15 @@ export async function transcribeRange(
   range: ClipRange,
   locale: string,
   engine: 'auto' | 'analyzer' | 'sf' = 'auto',
+  health?: PartHealth[],
 ): Promise<TranscribeResult> {
   await ensureDir();
   const tmp = CLIPS_DIR + `tmp-${Date.now()}.m4a`;
   try {
-    const pieces = piecesForRange(session, range.startSec, range.endSec);
-    if (pieces.length === 0) throw new Error('選んだ範囲に音がありません');
+    const pieces = health
+      ? piecesForRangeHealthy(session, range.startSec, range.endSec, health)
+      : piecesForRange(session, range.startSec, range.endSec);
+    if (pieces.length === 0) throw new Error('選んだ範囲に、読める音声がありません');
     const cut = await VoicerecAudio.clipRangesToM4a(
       pieces.map(p => p.uri), pieces.map(p => p.startSec), pieces.map(p => p.endSec), tmp);
     if (!cut.fileSize) throw new Error('切り出した音声が空でした');

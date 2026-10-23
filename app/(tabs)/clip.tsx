@@ -25,7 +25,8 @@ import TimeRangePicker, {
 import { CAF_PRESET, CAF_HIGH_QUALITY_PRESET } from '@/services/audio-recorder';
 import { LevelTrackWriter, meteringToLevel } from '@/services/level-track';
 import {
-  buildSessions, loadSessionLevels, piecesForRange, type ClipPiece, type Session,
+  buildSessions, checkParts, loadSessionLevels, piecesForRange,
+  type ClipPiece, type PartHealth, type Session,
 } from '@/services/session';
 import { createClipForUpload, transcribeRange } from '@/services/clip-service';
 import { deleteLevels } from '@/services/level-track';
@@ -88,6 +89,8 @@ export default function ClipScreen() {
   const [notice, setNotice] = useState<string | null>(null);
   const [inputName, setInputName] = useState<string>('');
   const [freeBytes, setFreeBytes] = useState<number | null>(null);
+  // 各ファイルが本当に読めるか。アプリが持つ長さは録音中に数えた値なので当てにならない
+  const [health, setHealth] = useState<PartHealth[] | null>(null);
   const [picking, setPicking] = useState(false);
 
   const writerRef = useRef<LevelTrackWriter | null>(null);
@@ -198,6 +201,20 @@ export default function ClipScreen() {
       const lv = await loadSessionLevels(source);
       if (!alive) return;
       setLevels(lv);
+      checkParts(source).then(h => {
+        if (!alive) return;
+        setHealth(h);
+        const bad = h.filter(x => !x.readable);
+        for (const b of bad) {
+          addDebugLog(`読めないファイル: ${b.filename} ${b.fileSize}B ${b.error ?? ''}`);
+        }
+        if (bad.length) {
+          setNotice(
+            `この録音の一部（${bad.length}件）が壊れていて読めません。` +
+            'その部分を除いて文字起こし・送信します。',
+          );
+        }
+      });
       const total = source.totalSec;
       const saved = source.transcript;
       if (saved) {
@@ -356,6 +373,24 @@ export default function ClipScreen() {
         await writer?.flush(true);
         return null;
       }
+      // ⚠️ **止めた直後のファイルを、すぐ動かさない。**
+      //    AAC の CAF は末尾にパケット表を書いてから完成する。長い録音ほど書き終えるのに
+      //    時間がかかり、その途中で move すると「長さは残っているのに解析できない」
+      //    ファイルができる（2026-10-23、74分の録音が OSStatus -17913 で開けなかった）。
+      //    読めるようになってから動かす。
+      let ready = false;
+      for (let i = 0; i < 40; i++) {
+        try {
+          const probe = await VoicerecAudio.inspect(uri);
+          if (probe.readable && (probe.durationSec ?? 0) > 0) { ready = true; break; }
+        } catch { /* まだ書き終えていない */ }
+        await new Promise(r => setTimeout(r, 150));
+      }
+      if (!ready) {
+        addDebugLog(`停止後にファイルを読めないまま保存します: ${uri.split('/').pop()}`);
+        await log(`finalize: file not readable after stop: ${uri}`);
+      }
+
       const filename = filenameRef.current || `${stamp(new Date())}.caf`;
       const dest = RECORDINGS_DIR + filename;
       await FileSystem.moveAsync({ from: uri, to: dest });
@@ -363,6 +398,8 @@ export default function ClipScreen() {
       let fileSize = 0;
       const info = await FileSystem.getInfoAsync(dest);
       if (info.exists && 'size' in info) fileSize = info.size ?? 0;
+      addDebugLog(`録音を保存: ${filename} ${(fileSize / 1024 / 1024).toFixed(1)}MB ` +
+        `${(durationMs / 1000).toFixed(0)}秒 読める=${ready}`);
 
       const entry: RecordingEntry = {
         id: generateId(),
@@ -486,7 +523,7 @@ export default function ClipScreen() {
     setBusy('文字起こし中…');
     setTranscript(null);
     try {
-      const r = await transcribeRange(source, range, transcribeLocale);
+      const r = await transcribeRange(source, range, transcribeLocale, 'auto', health ?? undefined);
       setTranscript({ text: r.text, engine: r.engine, ms: r.elapsedMs });
       if (r.text) {
         // 画面を離れても残るように録音に持たせる
@@ -510,7 +547,7 @@ export default function ClipScreen() {
     } finally {
       setBusy(null);
     }
-  }, [source, range, transcribeLocale, updateRecording, addDebugLog]);
+  }, [source, range, transcribeLocale, updateRecording, addDebugLog, health]);
 
   /** 文字起こしの結果を消す。録音に保存した分も一緒に消す */
   const clearTranscript = useCallback(async () => {
@@ -522,7 +559,7 @@ export default function ClipScreen() {
     if (!source) return;
     setBusy('切り出してアップロード中…');
     try {
-      const clip = await createClipForUpload(source, range);
+      const clip = await createClipForUpload(source, range, health ?? undefined);
       await addRecording(clip);
       uploadPending();
       Alert.alert('送信しました',
@@ -535,7 +572,7 @@ export default function ClipScreen() {
     } finally {
       setBusy(null);
     }
-  }, [source, range, addRecording, uploadPending, addDebugLog]);
+  }, [source, range, addRecording, uploadPending, addDebugLog, health]);
 
   // ⚠️ プレイヤーの currentTime は**いま鳴らしているファイルの中の位置**。
   //    セッションは複数ファイルに分かれうるので、全体の時間に直さないと巻き戻って見える。
@@ -648,6 +685,9 @@ export default function ClipScreen() {
                   </Text>
                   <Text style={[styles.cardTitle, { color: theme.textSecondary }]}>
                     {formatDuration(totalSec)} ・ {formatBytes(source.fileSize)}
+                    {health && health.some(h => !h.readable)
+                      ? ` ・ ${health.filter(h => !h.readable).length}件が読めません`
+                      : ''}
                     {sentFromSource > 0 ? ` ・ ${sentFromSource}件を送信済み` : ''}
                     {sessions.length > 1 ? ` ・ ほかに${sessions.length - 1}件` : ''}
                   </Text>

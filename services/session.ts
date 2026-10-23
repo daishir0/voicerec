@@ -9,6 +9,7 @@
 // 絶対時刻（壁時計）を基準に範囲を決め、それを各ファイルの位置に割り直す。
 
 import { RecordingEntry } from '@/types/recording';
+import VoicerecAudio from '@/modules/voicerec-audio';
 import { loadLevels } from './level-track';
 
 /** 区切り直しで生まれる隙間。これ以内なら「続き」とみなす */
@@ -148,4 +149,55 @@ export function describeSession(s: Session): string {
   const m = Math.floor((s.totalSec % 3600) / 60);
   const len = h > 0 ? `${h}時間${String(m).padStart(2, '0')}分` : `${m}分`;
   return `${s.startedAt.toLocaleString('ja-JP')} から ${len}`;
+}
+
+export type PartHealth = {
+  uri: string;
+  filename: string;
+  offsetSec: number;
+  durationSec: number;
+  readable: boolean;
+  fileSize: number;
+  error?: string;
+};
+
+/**
+ * セッションの各ファイルが本当に読めるかを確かめる。
+ *
+ * ⚠️ アプリが持っている長さは**録音中に数えた値**で、ファイルの中身とは別物。
+ *    録音中にアプリが落ちると、長さは残っているのにファイルは解析できない、という
+ *    食い違いが起きる（2026-10-23、74分のファイルが AVFoundation で開けず
+ *    OSStatus -17913 になった）。処理を始める前に確かめる。
+ */
+export async function checkParts(session: Session): Promise<PartHealth[]> {
+  return Promise.all(session.parts.map(async (p) => {
+    const base = {
+      uri: p.rec.uri,
+      filename: p.rec.filename,
+      offsetSec: p.offsetSec,
+      durationSec: p.durationSec,
+    };
+    try {
+      const info = await VoicerecAudio.inspect(p.rec.uri);
+      return {
+        ...base,
+        readable: !!info.readable && (info.durationSec ?? 0) > 0,
+        fileSize: info.fileSize,
+        error: info.error,
+      };
+    } catch (e: any) {
+      return { ...base, readable: false, fileSize: 0, error: e?.message ?? String(e) };
+    }
+  }));
+}
+
+/** 読めないファイルを除いた範囲を返す。何も残らなければ空。 */
+export function piecesForRangeHealthy(
+  session: Session,
+  startSec: number,
+  endSec: number,
+  health: PartHealth[],
+): ClipPiece[] {
+  const broken = new Set(health.filter(h => !h.readable).map(h => h.uri));
+  return piecesForRange(session, startSec, endSec).filter(p => !broken.has(p.uri));
 }
