@@ -50,8 +50,18 @@ export type TrimResult = {
   elapsedMs: number;
 };
 
+/** 文字起こしの一区切り。音声のどこを読んだ文字かを持つ */
+export type TranscriptSegment = {
+  text: string;
+  /** 渡した音声の先頭からの秒 */
+  startSec: number;
+  endSec: number;
+};
+
 export type TranscribeResult = {
   text: string;
+  /** 区切りごとの時刻。これで「どこまで文字になったか」が分かる */
+  segments: TranscriptSegment[];
   /** 実際に使ったエンジン */
   engine: 'analyzer' | 'sf';
   /** SFSpeech のときの分割数（1セッション1分の上限があるため） */

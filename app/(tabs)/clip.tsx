@@ -20,8 +20,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams } from 'expo-router';
 import { useApp } from '@/contexts/AppContext';
 import TimeRangePicker, {
-  formatDuration, type PlayRequest, type PlayTarget, type Range,
+  formatClock, formatDuration, type PlayRequest, type PlayTarget, type Range,
 } from '@/components/TimeRangePicker';
+import type { TranscriptSegment } from '@/modules/voicerec-audio';
 import { CAF_PRESET, CAF_HIGH_QUALITY_PRESET } from '@/services/audio-recorder';
 import { LevelTrackWriter, meteringToLevel } from '@/services/level-track';
 import {
@@ -85,7 +86,10 @@ export default function ClipScreen() {
   const [levels, setLevels] = useState<Uint8Array>(new Uint8Array(0));
   const [range, setRange] = useState<Range>({ startSec: 0, endSec: 0 });
   const [busy, setBusy] = useState<string | null>(null);
-  const [transcript, setTranscript] = useState<{ text: string; engine: string; ms: number } | null>(null);
+  const [transcript, setTranscript] = useState<
+    { text: string; engine: string; ms: number; segments?: TranscriptSegment[] } | null>(null);
+  // 既定は時刻つき。「どこまで文字になったか」が見えるのがこちらなので
+  const [transcriptMode, setTranscriptMode] = useState<'time' | 'plain'>('time');
   const [notice, setNotice] = useState<string | null>(null);
   const [inputName, setInputName] = useState<string>('');
   const [freeBytes, setFreeBytes] = useState<number | null>(null);
@@ -219,7 +223,7 @@ export default function ClipScreen() {
       const saved = source.transcript;
       if (saved) {
         setRange({ startSec: saved.startSec, endSec: saved.endSec });
-        setTranscript({ text: saved.text, engine: saved.engine, ms: 0 });
+        setTranscript({ text: saved.text, engine: saved.engine, ms: 0, segments: saved.segments });
       } else {
         // 録り終えた直後は全体が選ばれている方が自然（後から狭める方が速い）
         setRange({ startSec: 0, endSec: total });
@@ -524,12 +528,12 @@ export default function ClipScreen() {
     setTranscript(null);
     try {
       const r = await transcribeRange(source, range, transcribeLocale, 'auto', health ?? undefined);
-      setTranscript({ text: r.text, engine: r.engine, ms: r.elapsedMs });
+      setTranscript({ text: r.text, engine: r.engine, ms: r.elapsedMs, segments: r.segments });
       if (r.text) {
         // 画面を離れても残るように録音に持たせる
         await updateRecording(source.parts[0].rec.id, {
           transcript: {
-            text: r.text, engine: r.engine,
+            text: r.text, engine: r.engine, segments: r.segments,
             startSec: range.startSec, endSec: range.endSec,
             at: new Date().toISOString(),
           },
@@ -583,6 +587,34 @@ export default function ClipScreen() {
     if (!piece) return playerStatus.currentTime;
     return piece.sessionStartSec + Math.max(0, playerStatus.currentTime - piece.startSec);
   }, [playing, playerStatus.currentTime]);
+
+  /**
+   * 時刻つきの行を作る。近い区切りはまとめて、1行が短すぎないようにする。
+   * 時刻は「範囲の先頭からの秒」なので、録音全体の時刻に直してから表示する。
+   */
+  const transcriptLines = useMemo(() => {
+    const segs = transcript?.segments;
+    if (!segs?.length) return null;
+    const out: { at: number; text: string }[] = [];
+    for (const s of segs) {
+      const at = range.startSec + s.startSec;
+      const last = out[out.length - 1];
+      // 20秒ぶんたまったら次の行にする（1語ずつ改行すると読めない）
+      if (last && at - last.at < 20) last.text += s.text;
+      else out.push({ at, text: s.text });
+    }
+    return out;
+  }, [transcript?.segments, range.startSec]);
+
+  /** 選んだ範囲のうち、実際に文字が出た割合 */
+  const coverage = useMemo(() => {
+    const segs = transcript?.segments;
+    const span = range.endSec - range.startSec;
+    if (!segs?.length || span <= 0) return null;
+    const voiced = segs.reduce((s, x) => s + Math.max(0, x.endSec - x.startSec), 0);
+    const lastAt = range.startSec + Math.max(...segs.map(x => x.endSec));
+    return { voiced, span, percent: Math.min(100, Math.round((voiced / span) * 100)), lastAt };
+  }, [transcript?.segments, range.startSec, range.endSec]);
 
   const elapsed = Math.floor((state.durationMillis || 0) / 1000);
   const totalSec = source ? source.totalSec : 0;
@@ -766,6 +798,16 @@ export default function ClipScreen() {
                   文字起こし（端末内{transcript.ms > 0 ? ` / ${(transcript.ms / 1000).toFixed(1)}秒` : ''}）
                 </Text>
                 <View style={styles.transcriptActions}>
+                  {transcriptLines && (
+                    <Pressable
+                      onPress={() => setTranscriptMode(m => (m === 'time' ? 'plain' : 'time'))}
+                      hitSlop={8}
+                    >
+                      <Text style={{ color: theme.accent, fontSize: 13 }}>
+                        {transcriptMode === 'time' ? 'そのまま' : '時刻つき'}
+                      </Text>
+                    </Pressable>
+                  )}
                   <Pressable onPress={clearTranscript} hitSlop={8}>
                     <Text style={{ color: theme.textSecondary, fontSize: 13 }}>クリア</Text>
                   </Pressable>
@@ -780,9 +822,42 @@ export default function ClipScreen() {
                   </Pressable>
                 </View>
               </View>
-              <Text style={[styles.transcript, { color: theme.text }]}>
-                {transcript.text || '（音声から文字を取り出せませんでした）'}
-              </Text>
+              {/* どこまで文字になったか。これが見えないと「全部できたのか」が分からない */}
+              {coverage && source && (
+                <Text style={[styles.cardTitle, { color: theme.textSecondary }]}>
+                  {formatDuration(coverage.span)}のうち {formatDuration(coverage.voiced)}
+                  （{coverage.percent}%）が文字になりました ・ 最後の文字は{' '}
+                  {formatClock(source.startedAt, coverage.lastAt)}
+                </Text>
+              )}
+
+              {transcriptMode === 'time' && transcriptLines && source ? (
+                <View>
+                  {transcriptLines.map((line, i) => (
+                    <View key={i} style={styles.transcriptLine}>
+                      {/* 時刻を押すと、その地点から再生する */}
+                      <Pressable
+                        onPress={() => startPlay({ what: 'segment', fromSec: line.at, toSec: null })}
+                        disabled={state.isRecording}
+                        hitSlop={6}
+                      >
+                        <Text style={[styles.transcriptTime, {
+                          color: state.isRecording ? theme.textSecondary : theme.accent,
+                        }]}>
+                          {formatClock(source.startedAt, line.at)}
+                        </Text>
+                      </Pressable>
+                      <Text style={[styles.transcript, { color: theme.text, flex: 1 }]}>
+                        {line.text}
+                      </Text>
+                    </View>
+                  ))}
+                </View>
+              ) : (
+                <Text style={[styles.transcript, { color: theme.text }]}>
+                  {transcript.text || '（音声から文字を取り出せませんでした）'}
+                </Text>
+              )}
             </View>
           )}
         </>
@@ -885,4 +960,6 @@ const styles = StyleSheet.create({
   transcriptHeader: { flexDirection: 'row', justifyContent: 'space-between', alignItems: 'center' },
   transcriptActions: { flexDirection: 'row', alignItems: 'center', gap: 16 },
   transcript: { fontSize: 14, lineHeight: 22 },
+  transcriptLine: { flexDirection: 'row', gap: 10, marginTop: 8 },
+  transcriptTime: { fontSize: 13, fontVariant: ['tabular-nums'], paddingTop: 3, width: 52 },
 });

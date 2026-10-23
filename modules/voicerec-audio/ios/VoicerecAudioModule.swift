@@ -138,21 +138,23 @@ public class VoicerecAudioModule: Module {
 
       if engine != "sf", #available(iOS 26.0, *) {
         do {
-          let text = try await Self.transcribeWithAnalyzer(url: url, locale: loc)
-          return ["text": text, "engine": "analyzer", "chunks": 1,
+          let segs = try await Self.transcribeWithAnalyzer(url: url, locale: loc)
+          return ["text": Self.joined(segs), "segments": Self.dicts(segs),
+                  "engine": "analyzer", "chunks": 1,
                   "elapsedMs": Int(Date().timeIntervalSince(began) * 1000)]
         } catch {
           if engine == "analyzer" { throw error }
           // 自動なら旧APIに落ちる。落ちた理由は必ず返す（黙って落ちると原因が消える）
           let why = Self.describe(error, where: "SpeechAnalyzer")
-          let (text, chunks) = try await Self.transcribeWithSF(url: url, locale: loc)
-          return ["text": text, "engine": "sf", "chunks": chunks,
-                  "fallbackReason": why,
+          let (segs, chunks) = try await Self.transcribeWithSF(url: url, locale: loc)
+          return ["text": Self.joined(segs), "segments": Self.dicts(segs),
+                  "engine": "sf", "chunks": chunks, "fallbackReason": why,
                   "elapsedMs": Int(Date().timeIntervalSince(began) * 1000)]
         }
       }
-      let (text, chunks) = try await Self.transcribeWithSF(url: url, locale: loc)
-      return ["text": text, "engine": "sf", "chunks": chunks,
+      let (segs, chunks) = try await Self.transcribeWithSF(url: url, locale: loc)
+      return ["text": Self.joined(segs), "segments": Self.dicts(segs),
+              "engine": "sf", "chunks": chunks,
               "elapsedMs": Int(Date().timeIntervalSince(began) * 1000)]
     }
 
@@ -261,6 +263,21 @@ public class VoicerecAudioModule: Module {
   }
 
   // ── 補助 ───────────────────────────────────────────────
+
+  /// 文字起こしの一区切り。音声のどこを読んだかを持つ。
+  struct Seg {
+    let text: String
+    let start: Double
+    let end: Double
+  }
+
+  private static func joined(_ segs: [Seg]) -> String {
+    segs.map { $0.text }.joined()
+  }
+
+  private static func dicts(_ segs: [Seg]) -> [[String: Any]] {
+    segs.map { ["text": $0.text, "startSec": $0.start, "endSec": $0.end] }
+  }
   private static let pcmSettings: [String: Any] = [
     AVFormatIDKey: kAudioFormatLinearPCM,
     AVSampleRateKey: 16000,
@@ -355,14 +372,17 @@ public class VoicerecAudioModule: Module {
   ///    返ってくる結果はすべて確定で、そのまま連結してよい。
   /// ⚠️ finalizeAndFinishThroughEndOfInput() を呼ばないと results の for-await が終わらない。
   @available(iOS 26.0, *)
-  private static func transcribeWithAnalyzer(url: URL, locale: Locale) async throws -> String {
+  private static func transcribeWithAnalyzer(url: URL, locale: Locale) async throws -> [Seg] {
     let supported = await SpeechTranscriber.supportedLocales
     guard supported.contains(where: { $0.identifier(.bcp47) == locale.identifier(.bcp47) }) else {
       throw Exception(name: "LocaleNotSupported",
                       description: "\(locale.identifier) は端末内の音声認識に対応していません")
     }
+    // ⚠️ .audioTimeRange を頼まないと、どこを読んだ文字なのかが返ってこない。
+    //    「全部文字になっているか」を利用者が確かめられるように、必ず付ける。
     let transcriber = SpeechTranscriber(locale: locale, transcriptionOptions: [],
-                                        reportingOptions: [], attributeOptions: [])
+                                        reportingOptions: [],
+                                        attributeOptions: [.audioTimeRange])
     let installed = await SpeechTranscriber.installedLocales
     if !installed.contains(where: { $0.identifier(.bcp47) == locale.identifier(.bcp47) }) {
       try await Self.step("\(locale.identifier) の音声認識モデルの用意", {
@@ -382,10 +402,25 @@ public class VoicerecAudioModule: Module {
     }
 
     // 読み出しは音声を流し込むのと同時に回す（先に finalize すると取りこぼす）
-    let collect = Task { () -> String in
-      var out = ""
+    let collect = Task { () -> [Seg] in
+      var out: [Seg] = []
       for try await result in transcriber.results {
-        out += String(result.text.characters)
+        let attributed = result.text
+        // 位置の情報は属性として付いてくる。付いていない部分は直前の続きとして扱う
+        for run in attributed.runs {
+          let piece = String(attributed[run.range].characters)
+          if piece.isEmpty { continue }
+          if let r = run.audioTimeRange {
+            out.append(Seg(text: piece,
+                           start: CMTimeGetSeconds(r.start),
+                           end: CMTimeGetSeconds(CMTimeRangeGetEnd(r))))
+          } else if var last = out.popLast() {
+            last = Seg(text: last.text + piece, start: last.start, end: last.end)
+            out.append(last)
+          } else {
+            out.append(Seg(text: piece, start: 0, end: 0))
+          }
+        }
       }
       return out
     }
@@ -395,7 +430,7 @@ public class VoicerecAudioModule: Module {
   }
 
   /// SFSpeechRecognizer。1セッション1分の上限があるので 55 秒ずつに切って回す。
-  private static func transcribeWithSF(url: URL, locale: Locale) async throws -> (String, Int) {
+  private static func transcribeWithSF(url: URL, locale: Locale) async throws -> ([Seg], Int) {
     guard let recognizer = SFSpeechRecognizer(locale: locale), recognizer.isAvailable else {
       throw Exception(name: "RecognizerUnavailable",
                       description: "\(locale.identifier) の音声認識が使えません")
@@ -411,7 +446,7 @@ public class VoicerecAudioModule: Module {
     }
 
     let chunk = 55.0
-    var texts: [String] = []
+    var segs: [Seg] = []
     var at = 0.0
     let tmpDir = FileManager.default.temporaryDirectory
     while at < total {
@@ -420,13 +455,16 @@ public class VoicerecAudioModule: Module {
       _ = try await transcode(src: url, dst: part, startSec: at, endSec: to,
                               fileType: .wav, settings: pcmSettings)
       defer { try? FileManager.default.removeItem(at: part) }
-      texts.append(try await recognizeOne(recognizer: recognizer, url: part))
+      // 分割した位置ぶんだけ、時刻をずらして足す
+      let offset = at
+      segs += try await recognizeOne(recognizer: recognizer, url: part)
+        .map { Seg(text: $0.text, start: $0.start + offset, end: $0.end + offset) }
       at = to
     }
-    return (texts.joined(separator: ""), texts.count)
+    return (segs, Int(ceil(total / chunk)))
   }
 
-  private static func recognizeOne(recognizer: SFSpeechRecognizer, url: URL) async throws -> String {
+  private static func recognizeOne(recognizer: SFSpeechRecognizer, url: URL) async throws -> [Seg] {
     try await withCheckedThrowingContinuation { cont in
       let request = SFSpeechURLRecognitionRequest(url: url)
       request.shouldReportPartialResults = false
@@ -446,7 +484,10 @@ public class VoicerecAudioModule: Module {
         }
         if let result = result, result.isFinal {
           resumed = true
-          cont.resume(returning: result.bestTranscription.formattedString)
+          // SFSpeech は元から区間ごとの時刻を持っている
+          cont.resume(returning: result.bestTranscription.segments.map {
+            Seg(text: $0.substring, start: $0.timestamp, end: $0.timestamp + $0.duration)
+          })
         }
       }
     }

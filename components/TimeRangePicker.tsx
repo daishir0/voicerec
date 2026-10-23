@@ -13,7 +13,8 @@ import { downsample } from '@/services/level-track';
 
 export type Range = { startSec: number; endSec: number };
 /** どちらの端から鳴らすか。どちらも**止めるまで鳴り続ける**（聴きたい長さは人による） */
-export type PlayTarget = 'start' | 'end';
+/** 'segment' は文字起こしの行から鳴らしたとき。端の切替とは別扱いにする */
+export type PlayTarget = 'start' | 'end' | 'segment';
 export type PlayRequest = { what: PlayTarget; fromSec: number; toSec: number | null };
 
 type Theme = {

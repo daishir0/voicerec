@@ -48,6 +48,8 @@ export interface RecordingEntry {
    */
   transcript?: {
     text: string;
+    /** 区切りごとの時刻（範囲の先頭からの秒）。古いデータには無い */
+    segments?: { text: string; startSec: number; endSec: number }[];
     /** 'analyzer'（iOS26+）か 'sf' */
     engine: string;
     /** どの範囲を起こしたか（秒） */
