@@ -47,6 +47,8 @@ export default function SettingsScreen() {
     setKeepUnuploaded,
     transcribeLocale,
     setTranscribeLocale,
+    sendTranscriptWithUpload,
+    setSendTranscriptWithUpload,
     coexistWithOtherApps,
     setCoexistWithOtherApps,
     startTab,
@@ -276,6 +278,25 @@ export default function SettingsScreen() {
                 </Pressable>
               );
             })}
+          </View>
+
+          {/* 端末で作った文字起こしを、音声と一緒にサーバーへ送るか */}
+          <View style={[styles.debugToggleRow, { marginTop: 18 }]}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={[styles.label, { color: theme.textSecondary, marginTop: 0 }]}>
+                文字起こしも一緒に送る
+              </Text>
+              <Text style={[styles.qualityHint, { color: theme.textSecondary }]}>
+                {sendTranscriptWithUpload
+                  ? '端末で文字起こし済みの範囲は、その結果も送ります。サーバーで作り直さないぶん早く読めます。'
+                  : '音声だけを送ります。文字起こしはサーバー側で改めて行われます。'}
+              </Text>
+            </View>
+            <Switch
+              value={sendTranscriptWithUpload}
+              onValueChange={setSendTranscriptWithUpload}
+              trackColor={{ false: theme.bgTertiary, true: theme.accent }}
+            />
           </View>
         </View>
 

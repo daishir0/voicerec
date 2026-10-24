@@ -72,7 +72,7 @@ export default function ClipScreen() {
   const {
     theme, recordings, addRecording, updateRecording, deleteRecording, uploadPending,
     recordingQuality, transcribeLocale, activeRecorder, setActiveRecorder, addDebugLog,
-    runRetention, coexistWithOtherApps, recordingAudioMode,
+    runRetention, coexistWithOtherApps, recordingAudioMode, sendTranscriptWithUpload,
   } = useApp();
 
   const recorder = useAudioRecorder(
@@ -563,7 +563,16 @@ export default function ClipScreen() {
     if (!source) return;
     setBusy('切り出してアップロード中…');
     try {
-      const clip = await createClipForUpload(source, range, health ?? undefined);
+      // 同じ範囲を端末で文字起こし済みなら、それも送る（サーバーで作り直さない）
+      const saved = source.transcript;
+      const sameRange = !!saved
+        && Math.abs(saved.startSec - range.startSec) < 1
+        && Math.abs(saved.endSec - range.endSec) < 1;
+      const attach = sendTranscriptWithUpload && sameRange
+        ? { ...saved!, locale: transcribeLocale }
+        : undefined;
+      const clip = await createClipForUpload(source, range, health ?? undefined, attach);
+      if (attach) addDebugLog('端末の文字起こしを添えて送ります（サーバーでは作り直しません）');
       await addRecording(clip);
       uploadPending();
       Alert.alert('送信しました',
@@ -576,7 +585,8 @@ export default function ClipScreen() {
     } finally {
       setBusy(null);
     }
-  }, [source, range, addRecording, uploadPending, addDebugLog, health]);
+  }, [source, range, addRecording, uploadPending, addDebugLog, health,
+      sendTranscriptWithUpload, transcribeLocale]);
 
   // ⚠️ プレイヤーの currentTime は**いま鳴らしているファイルの中の位置**。
   //    セッションは複数ファイルに分かれうるので、全体の時間に直さないと巻き戻って見える。
@@ -765,7 +775,11 @@ export default function ClipScreen() {
             >
               <Ionicons name="cloud-upload-outline" size={20} color="#fff" />
               <Text style={[styles.actionLabel, { color: '#fff' }]}>この範囲をサーバーへ</Text>
-              <Text style={[styles.actionHint, { color: '#fff' }]}>送信後に自動で文字起こし</Text>
+              <Text style={[styles.actionHint, { color: '#fff' }]}>
+                {sendTranscriptWithUpload && transcript
+                  ? '文字起こしも一緒に送ります'
+                  : '送信後に自動で文字起こし'}
+              </Text>
             </Pressable>
           </View>
 

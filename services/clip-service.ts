@@ -65,6 +65,8 @@ export async function createClipForUpload(
   session: Session,
   range: ClipRange,
   health?: PartHealth[],
+  /** この範囲を端末で文字起こし済みなら渡す。サーバーはこれを採用し、作り直さない */
+  transcript?: RecordingEntry['transcript'],
 ): Promise<RecordingEntry> {
   await ensureDir();
   const filename = clipFilename(session, range, '.m4a');
@@ -90,6 +92,8 @@ export async function createClipForUpload(
     createdAt: new Date().toISOString(),
     kind: 'clip',
     startedAt: startedAt.toISOString(),
+    // 区間の秒は切り出した範囲の先頭から数えた値なので、そのまま渡せる
+    ...(transcript ? { transcript } : {}),
     sourceId: session.parts[0].rec.id,
     clipStartSec: range.startSec,
     clipEndSec: range.endSec,

@@ -52,6 +52,8 @@ export interface RecordingEntry {
     segments?: { text: string; startSec: number; endSec: number }[];
     /** 'analyzer'（iOS26+）か 'sf' */
     engine: string;
+    /** 文字起こしに使った言語。サーバーへ送るときに添える */
+    locale?: string;
     /** どの範囲を起こしたか（秒） */
     startSec: number;
     endSec: number;

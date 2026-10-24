@@ -180,6 +180,17 @@ export async function uploadRecording(
             originalName: recording.filename,
             displayName: recording.displayName,
             duration: String(recording.duration),
+            // 端末で既に文字起こししてあるなら、それも送る。
+            // サーバーは受け取った文字起こしをそのまま採用し、作り直さない
+            // （同じ音声に Whisper をもう一度かけるのは、CPU も待ち時間も無駄になる）。
+            ...(recording.transcript?.text
+              ? {
+                  transcriptText: recording.transcript.text,
+                  transcriptSegments: JSON.stringify(recording.transcript.segments ?? []),
+                  transcriptSource: `device-${recording.transcript.engine}`,
+                  transcriptLocale: recording.transcript.locale ?? '',
+                }
+              : {}),
           },
           headers: {
             Authorization: authHeader,
