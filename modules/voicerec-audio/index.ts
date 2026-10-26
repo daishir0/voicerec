@@ -47,6 +47,10 @@ export type TrimResult = {
   requestedSec?: number;
   /** 繋いだファイルの数（clipRanges* のとき） */
   partCount?: number;
+  /** 実際に書き出したビットレート（bps）。元の録音に合わせた値 */
+  bitRate?: number;
+  /** 実際に書き出したサンプルレート（Hz） */
+  sampleRate?: number;
   elapsedMs: number;
 };
 

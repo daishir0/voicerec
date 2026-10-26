@@ -67,6 +67,8 @@ export async function createClipForUpload(
   health?: PartHealth[],
   /** この範囲を端末で文字起こし済みなら渡す。サーバーはこれを採用し、作り直さない */
   transcript?: RecordingEntry['transcript'],
+  /** 書き出した形を残したいとき。実機では画面のログでしか確かめられない */
+  log?: (msg: string) => void,
 ): Promise<RecordingEntry> {
   await ensureDir();
   const filename = clipFilename(session, range, '.m4a');
@@ -78,6 +80,11 @@ export async function createClipForUpload(
   if (pieces.length === 0) throw new Error('選んだ範囲に、読める音声がありません');
   const trimmed = await VoicerecAudio.clipRangesToM4a(
     pieces.map(p => p.uri), pieces.map(p => p.startSec), pieces.map(p => p.endSec), dest);
+  // 元の録音と同じ形で書けているかは、ここを見れば分かる
+  log?.(`切り出し: ${(trimmed.fileSize / 1024 / 1024).toFixed(1)}MB `
+    + `${((trimmed.bitRate ?? 0) / 1000).toFixed(0)}kbps `
+    + `${((trimmed.sampleRate ?? 0) / 1000).toFixed(1)}kHz `
+    + `${trimmed.partCount ?? 1}本`);
   const startedAt = clipStartedAt(session, range);
 
   return {

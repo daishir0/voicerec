@@ -571,13 +571,16 @@ export default function ClipScreen() {
       const attach = sendTranscriptWithUpload && sameRange
         ? { ...saved!, locale: transcribeLocale }
         : undefined;
-      const clip = await createClipForUpload(source, range, health ?? undefined, attach);
+      const clip = await createClipForUpload(source, range, health ?? undefined, attach, addDebugLog);
       if (attach) addDebugLog('端末の文字起こしを添えて送ります（サーバーでは作り直しません）');
       await addRecording(clip);
       uploadPending();
       Alert.alert('送信しました',
         `${clip.displayName}（${formatDuration(clip.duration / 1000)} / ${formatBytes(clip.fileSize)}）\n` +
-        'サーバー側で文字起こしされます。');
+        // 文字起こしを添えたなら、サーバーは作り直さない。固定文だと実態と食い違う
+        (attach
+          ? '端末の文字起こしも一緒に送りました。'
+          : 'サーバー側で文字起こしされます。'));
     } catch (e: any) {
       const msg = e?.message ?? String(e);
       addDebugLog(`切り出しに失敗: ${msg}`);

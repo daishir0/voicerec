@@ -104,9 +104,10 @@ public class VoicerecAudioModule: Module {
 
     // アップロード用。サーバーは m4a を受け取る。
     AsyncFunction("trimToM4a") { (uri: String, startSec: Double, endSec: Double, outUri: String) -> [String: Any] in
+      // settings を渡さない＝元の音声と同じ形で書く
       try await Self.transcode(src: Self.fileURL(uri), dst: Self.fileURL(outUri),
                                startSec: startSec, endSec: endSec, fileType: .m4a,
-                               settings: Self.aacSettings)
+                               settings: nil)
     }
 
     // ── 複数のファイルをまたいで切り出す ────────────────
@@ -125,7 +126,7 @@ public class VoicerecAudioModule: Module {
     AsyncFunction("clipRangesToM4a") { (uris: [String], starts: [Double], ends: [Double], outUri: String) -> [String: Any] in
       try await Self.transcodeMany(uris: uris, starts: starts, ends: ends,
                                    dst: Self.fileURL(outUri), fileType: .m4a,
-                                   settings: Self.aacSettings)
+                                   settings: nil)
     }
 
     // ── 4. 端末内で文字起こしする ────────────────────────
@@ -288,12 +289,50 @@ public class VoicerecAudioModule: Module {
     AVLinearPCMIsNonInterleaved: false
   ]
 
-  private static let aacSettings: [String: Any] = [
+  /// 元の音声が分からないときに使う AAC の設定
+  private static let aacSettingsDefault: [String: Any] = [
     AVFormatIDKey: kAudioFormatMPEG4AAC,
     AVSampleRateKey: 16000,
     AVNumberOfChannelsKey: 1,
     AVEncoderBitRateKey: 32000
   ]
+
+  /// AAC で選べるビットレート。実測値をこの中の一番近いものに寄せる
+  private static let aacBitRateChoices = [12000, 16000, 24000, 32000, 48000, 64000]
+  /// これ以上は上げない。文字起こしのための録音に高音質は要らない
+  private static let aacBitRateCap = 64000
+
+  /// 元の音声と同じ形で書き出すための設定を作る。
+  ///
+  /// ⚠️ 固定で 16kHz / 32kbps を書いていたため、12kHz / 16kbps で録った音声を
+  /// 切り出すと**サイズが2倍**になっていた（2026-10-26、8時間の録音が 54.9MB → 108.2MB）。
+  /// AAC が一度捨てた情報はビットレートを上げても戻らないので、増えるのは容量だけで、
+  /// 音質は元のまま。アップロード量も保存容量も無駄に倍になる。
+  /// 切り出しは「範囲を切り取る」操作であって、品質を変える操作ではない。
+  private static func aacSettingsMatching(_ track: AVAssetTrack) async -> [String: Any] {
+    var sampleRate = 16000.0
+    var channels = 1
+    if let fds = try? await track.load(.formatDescriptions),
+       let asbd = fds.first.flatMap({ CMAudioFormatDescriptionGetStreamBasicDescription($0) })?.pointee {
+      if asbd.mSampleRate > 0 { sampleRate = asbd.mSampleRate }
+      if asbd.mChannelsPerFrame > 0 { channels = Int(asbd.mChannelsPerFrame) }
+    }
+
+    var bitRate = 32000
+    if let rate = try? await track.load(.estimatedDataRate), rate.isFinite, rate > 0 {
+      let want = Int(rate)
+      // 実測は 15,800 のような半端な値になるので、選べる値の中で一番近いものにする
+      bitRate = aacBitRateChoices.min(by: { abs($0 - want) < abs($1 - want) }) ?? 32000
+    }
+    bitRate = min(bitRate, aacBitRateCap)
+
+    return [
+      AVFormatIDKey: kAudioFormatMPEG4AAC,
+      AVSampleRateKey: sampleRate,
+      AVNumberOfChannelsKey: channels,
+      AVEncoderBitRateKey: bitRate
+    ]
+  }
 
   private static func fileURL(_ uri: String) -> URL {
     if uri.hasPrefix("file://") { return URL(string: uri) ?? URL(fileURLWithPath: uri) }
@@ -499,7 +538,7 @@ public class VoicerecAudioModule: Module {
   /// 境目をまたぐ範囲も扱えなければならない。
   private static func transcodeMany(uris: [String], starts: [Double], ends: [Double],
                                     dst: URL, fileType: AVFileType,
-                                    settings: [String: Any]) async throws -> [String: Any] {
+                                    settings: [String: Any]?) async throws -> [String: Any] {
     let began = Date()
     guard uris.count == starts.count, uris.count == ends.count, !uris.isEmpty else {
       throw Exception(name: "BadArguments",
@@ -514,6 +553,8 @@ public class VoicerecAudioModule: Module {
 
     var cursor = CMTime.zero
     var used = 0
+    // 書き出しの設定を作るために、最初に読めた元トラックを覚えておく
+    var firstSourceTrack: AVAssetTrack?
     for i in 0..<uris.count {
       let url = fileURL(uris[i])
       let asset = AVURLAsset(url: url)
@@ -521,6 +562,7 @@ public class VoicerecAudioModule: Module {
       guard let track = try await Self.step("\(name) のトラック読み込み", {
         try await asset.loadTracks(withMediaType: .audio).first
       }) else { continue }
+      if firstSourceTrack == nil { firstSourceTrack = track }
       let from = max(0, starts[i])
       let to = ends[i] > from ? ends[i] : from
       guard to > from else { continue }
@@ -556,9 +598,19 @@ public class VoicerecAudioModule: Module {
       throw Exception(name: "EmptyRange", description: "切り出せる範囲がありませんでした")
     }
 
+    // ⚠️ 合成トラックからは元のビットレートを読めない（estimatedDataRate が 0 になる）。
+    //    連結した1本目の**元ファイル**から設定を作る。どのファイルも同じ設定で録っている。
+    var useSettings = Self.aacSettingsDefault
+    if let given = settings {
+      useSettings = given
+    } else if let src = firstSourceTrack {
+      useSettings = await Self.aacSettingsMatching(src)
+    }
     var out = try await runReaderWriter(asset: comp, track: compTrack,
                                         timeRange: CMTimeRange(start: .zero, duration: cursor),
-                                        dst: dst, fileType: fileType, settings: settings)
+                                        dst: dst, fileType: fileType, settings: useSettings)
+    out["bitRate"] = useSettings[AVEncoderBitRateKey] ?? 0
+    out["sampleRate"] = useSettings[AVSampleRateKey] ?? 0
     out["elapsedMs"] = Int(Date().timeIntervalSince(began) * 1000)
     out["startSec"] = 0.0
     out["endSec"] = CMTimeGetSeconds(cursor)
@@ -569,8 +621,9 @@ public class VoicerecAudioModule: Module {
 
   /// 指定範囲を読み出して書き直す。AVAssetExportSession ではサンプルレートを
   /// 指定できないので、reader/writer で自分で回す。
+  /// settings が nil のときは、元の音声と同じ形（サンプルレート・チャンネル・ビットレート）で書く。
   private static func transcode(src: URL, dst: URL, startSec: Double, endSec: Double,
-                                fileType: AVFileType, settings: [String: Any]) async throws -> [String: Any] {
+                                fileType: AVFileType, settings: [String: Any]?) async throws -> [String: Any] {
     let began = Date()
     let asset = AVURLAsset(url: src)
     let tracks = try await Self.step("\(src.lastPathComponent) のトラック読み込み", {
@@ -594,11 +647,14 @@ public class VoicerecAudioModule: Module {
                       description: "範囲が空です (\(from) → \(to), 全体 \(total)秒)")
     }
 
+    let useSettings = settings ?? (await Self.aacSettingsMatching(track))
     var out = try await runReaderWriter(
       asset: asset, track: track,
       timeRange: CMTimeRange(start: CMTime(seconds: from, preferredTimescale: 600),
                              end: CMTime(seconds: to, preferredTimescale: 600)),
-      dst: dst, fileType: fileType, settings: settings)
+      dst: dst, fileType: fileType, settings: useSettings)
+    out["bitRate"] = useSettings[AVEncoderBitRateKey] ?? 0
+    out["sampleRate"] = useSettings[AVSampleRateKey] ?? 0
     out["startSec"] = from
     out["endSec"] = to
     out["requestedSec"] = to - from
@@ -615,8 +671,13 @@ public class VoicerecAudioModule: Module {
                                       settings: [String: Any]) async throws -> [String: Any] {
     let reader = try Self.step("読み出し器の作成", { try AVAssetReader(asset: asset) })
     reader.timeRange = timeRange
-    // 読み出しは必ずリニアPCMに展開する（圧縮のままでは書き手に渡せない）
-    let output = AVAssetReaderTrackOutput(track: track, outputSettings: pcmSettings)
+    // 読み出しは必ずリニアPCMに展開する（圧縮のままでは書き手に渡せない）。
+    // ⚠️ 展開するサンプルレートは**書き出しに合わせる**。固定で 16kHz に開くと、
+    //    12kHz の録音が 12k → 16k → 12k と2回変換され、遅くなるうえ音も余計に劣化する。
+    var readSettings = pcmSettings
+    if let rate = settings[AVSampleRateKey] { readSettings[AVSampleRateKey] = rate }
+    if let ch = settings[AVNumberOfChannelsKey] { readSettings[AVNumberOfChannelsKey] = ch }
+    let output = AVAssetReaderTrackOutput(track: track, outputSettings: readSettings)
     output.alwaysCopiesSampleData = false
     reader.add(output)
 
