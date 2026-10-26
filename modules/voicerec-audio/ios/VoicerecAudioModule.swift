@@ -647,7 +647,13 @@ public class VoicerecAudioModule: Module {
                       description: "範囲が空です (\(from) → \(to), 全体 \(total)秒)")
     }
 
-    let useSettings = settings ?? (await Self.aacSettingsMatching(track))
+    // ⚠️ `??` の右辺は非 async の autoclosure なので await を書けない。if で分ける
+    let useSettings: [String: Any]
+    if let given = settings {
+      useSettings = given
+    } else {
+      useSettings = await Self.aacSettingsMatching(track)
+    }
     var out = try await runReaderWriter(
       asset: asset, track: track,
       timeRange: CMTimeRange(start: CMTime(seconds: from, preferredTimescale: 600),
