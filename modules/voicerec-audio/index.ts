@@ -51,6 +51,8 @@ export type TrimResult = {
   bitRate?: number;
   /** 実際に書き出したサンプルレート（Hz） */
   sampleRate?: number;
+  /** 元の音声から実測したビットレート（bps）。0 なら測れなかった */
+  sourceBps?: number;
   elapsedMs: number;
 };
 
