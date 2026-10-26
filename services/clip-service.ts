@@ -85,8 +85,8 @@ export async function createClipForUpload(
     + `${((trimmed.bitRate ?? 0) / 1000).toFixed(0)}kbps `
     + `${((trimmed.sampleRate ?? 0) / 1000).toFixed(1)}kHz `
     + `${trimmed.partCount ?? 1}本 `
-    // 実測が 0 なら元ファイルから読めず既定値に落ちている
-    + `(元の実測 ${((trimmed.sourceBps ?? 0) / 1000).toFixed(1)}kbps)`);
+    // 実測が 0 なら元ファイルから読めず既定値に落ちている。how でどこから取れたか分かる
+    + `(元の実測 ${((trimmed.sourceBps ?? 0) / 1000).toFixed(1)}kbps ${trimmed.sourceHow ?? '?'})`);
   const startedAt = clipStartedAt(session, range);
 
   return {

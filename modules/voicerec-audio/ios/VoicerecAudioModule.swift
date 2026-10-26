@@ -309,7 +309,8 @@ public class VoicerecAudioModule: Module {
   /// AAC が一度捨てた情報はビットレートを上げても戻らないので、増えるのは容量だけで、
   /// 音質は元のまま。アップロード量も保存容量も無駄に倍になる。
   /// 切り出しは「範囲を切り取る」操作であって、品質を変える操作ではない。
-  private static func aacSettingsMatching(_ track: AVAssetTrack) async -> (settings: [String: Any], measuredBps: Int) {
+  private static func aacSettingsMatching(_ track: AVAssetTrack, asset: AVAsset, url: URL)
+    async -> (settings: [String: Any], measuredBps: Int, how: String) {
     var sampleRate = 16000.0
     var channels = 1
     if let fds = try? await track.load(.formatDescriptions),
@@ -318,23 +319,41 @@ public class VoicerecAudioModule: Module {
       if asbd.mChannelsPerFrame > 0 { channels = Int(asbd.mChannelsPerFrame) }
     }
 
-    // ⚠️ estimatedDataRate は **CAF では 0 のまま**のことがある（2026-10-26、
-    //    .caf の録音を切り出すと既定の 32kbps に落ちて、サイズが元の2倍のままだった）。
-    //    実際のデータ量から割り出すほうが確実なので、そちらを先に試す。
-    var measured = 0.0
-    if let bytes = try? await track.load(.totalSampleDataLength),
-       let range = try? await track.load(.timeRange) {
-      let sec = CMTimeGetSeconds(range.duration)
-      if bytes > 0, sec > 0, sec.isFinite { measured = Double(bytes) * 8 / sec }
+    // ⚠️ 切り出しタブの録音は **.caf** で、AVFoundation はこの形式に対して
+    //    estimatedDataRate も totalSampleDataLength も **0 を返す**（2026-10-26 に両方とも踏んだ）。
+    //    トラックに聞くのはやめて、最後はファイルそのものの大きさから割り出す。
+    //    容器のヘッダぶん少し多めに出るが、選べる値に寄せるので結果は変わらない。
+    var bytes: Int64 = 0
+    var how = "none"
+    if let n = try? await track.load(.totalSampleDataLength), n > 0 {
+      bytes = n
+      how = "track"
+    } else if let attrs = try? FileManager.default.attributesOfItem(atPath: url.path),
+              let n = (attrs[.size] as? NSNumber)?.int64Value, n > 0 {
+      bytes = n
+      how = "file"
     }
-    if measured <= 0, let rate = try? await track.load(.estimatedDataRate), rate.isFinite, rate > 0 {
+
+    var sec = 0.0
+    if let r = try? await track.load(.timeRange) { sec = CMTimeGetSeconds(r.duration) }
+    if !(sec > 0 && sec.isFinite), let d = try? await asset.load(.duration) {
+      sec = CMTimeGetSeconds(d)
+    }
+
+    var measured = 0.0
+    if bytes > 0, sec > 0, sec.isFinite {
+      measured = Double(bytes) * 8 / sec
+    } else if let rate = try? await track.load(.estimatedDataRate), rate.isFinite, rate > 0 {
       measured = Double(rate)
+      how = "estimate"
+    } else {
+      how = "none"
     }
 
     var bitRate = 32000
     if measured > 0 {
       let want = Int(measured)
-      // 実測は 16,384 のような半端な値になるので、選べる値の中で一番近いものにする
+      // 実測は 17,938 のような半端な値になるので、選べる値の中で一番近いものにする
       bitRate = aacBitRateChoices.min(by: { abs($0 - want) < abs($1 - want) }) ?? 32000
     }
     bitRate = min(bitRate, aacBitRateCap)
@@ -344,7 +363,7 @@ public class VoicerecAudioModule: Module {
       AVSampleRateKey: sampleRate,
       AVNumberOfChannelsKey: channels,
       AVEncoderBitRateKey: bitRate
-    ], Int(measured))
+    ], Int(measured), how)
   }
 
   private static func fileURL(_ uri: String) -> URL {
@@ -566,8 +585,10 @@ public class VoicerecAudioModule: Module {
 
     var cursor = CMTime.zero
     var used = 0
-    // 書き出しの設定を作るために、最初に読めた元トラックを覚えておく
+    // 書き出しの設定を作るために、最初に読めた元ファイルを覚えておく
     var firstSourceTrack: AVAssetTrack?
+    var firstSourceAsset: AVAsset?
+    var firstSourceURL: URL?
     for i in 0..<uris.count {
       let url = fileURL(uris[i])
       let asset = AVURLAsset(url: url)
@@ -575,7 +596,11 @@ public class VoicerecAudioModule: Module {
       guard let track = try await Self.step("\(name) のトラック読み込み", {
         try await asset.loadTracks(withMediaType: .audio).first
       }) else { continue }
-      if firstSourceTrack == nil { firstSourceTrack = track }
+      if firstSourceTrack == nil {
+        firstSourceTrack = track
+        firstSourceAsset = asset
+        firstSourceURL = url
+      }
       let from = max(0, starts[i])
       let to = ends[i] > from ? ends[i] : from
       guard to > from else { continue }
@@ -615,12 +640,14 @@ public class VoicerecAudioModule: Module {
     //    連結した1本目の**元ファイル**から設定を作る。どのファイルも同じ設定で録っている。
     var useSettings = Self.aacSettingsDefault
     var measuredBps = 0
+    var how = "default"
     if let given = settings {
       useSettings = given
-    } else if let src = firstSourceTrack {
-      let m = await Self.aacSettingsMatching(src)
+    } else if let src = firstSourceTrack, let a = firstSourceAsset, let u = firstSourceURL {
+      let m = await Self.aacSettingsMatching(src, asset: a, url: u)
       useSettings = m.settings
       measuredBps = m.measuredBps
+      how = m.how
     }
     var out = try await runReaderWriter(asset: comp, track: compTrack,
                                         timeRange: CMTimeRange(start: .zero, duration: cursor),
@@ -628,6 +655,7 @@ public class VoicerecAudioModule: Module {
     out["bitRate"] = useSettings[AVEncoderBitRateKey] ?? 0
     out["sampleRate"] = useSettings[AVSampleRateKey] ?? 0
     out["sourceBps"] = measuredBps
+    out["sourceHow"] = how
     out["elapsedMs"] = Int(Date().timeIntervalSince(began) * 1000)
     out["startSec"] = 0.0
     out["endSec"] = CMTimeGetSeconds(cursor)
@@ -667,12 +695,14 @@ public class VoicerecAudioModule: Module {
     // ⚠️ `??` の右辺は非 async の autoclosure なので await を書けない。if で分ける
     let useSettings: [String: Any]
     var measuredBps = 0
+    var how = "default"
     if let given = settings {
       useSettings = given
     } else {
-      let m = await Self.aacSettingsMatching(track)
+      let m = await Self.aacSettingsMatching(track, asset: asset, url: src)
       useSettings = m.settings
       measuredBps = m.measuredBps
+      how = m.how
     }
     var out = try await runReaderWriter(
       asset: asset, track: track,
@@ -682,6 +712,7 @@ public class VoicerecAudioModule: Module {
     out["bitRate"] = useSettings[AVEncoderBitRateKey] ?? 0
     out["sampleRate"] = useSettings[AVSampleRateKey] ?? 0
     out["sourceBps"] = measuredBps
+    out["sourceHow"] = how
     out["startSec"] = from
     out["endSec"] = to
     out["requestedSec"] = to - from
