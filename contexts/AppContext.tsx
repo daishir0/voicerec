@@ -119,6 +119,8 @@ interface AppContextType {
   transcribingId: string | null;
   /** 順番待ちの数（いま処理中のものを含む） */
   transcribePending: number;
+  /** 残りの見込み秒数。実測した速さから出すので、端末と engine の違いに追いつく */
+  transcribeEtaSec: number;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -151,6 +153,12 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [autoTranscribe, setAutoTranscribeState] = useState(true);
   const [transcribeQueue, setTranscribeQueue] = useState<string[]>([]);
   const [transcribingId, setTranscribingId] = useState<string | null>(null);
+  /**
+   * 文字起こしの速さ（音声の秒数 ÷ かかった秒数）。
+   * ⚠️ 決め打ちにしない。iOS 26 以降の SpeechAnalyzer は実時間の約38倍だが、
+   *    それ以前に落ちる SFSpeechRecognizer は桁違いに遅い。1本終えるたびに測り直す。
+   */
+  const speedRef = useRef(38);
   const [activeRecorder, setActiveRecorder] = useState<'long' | null>(null);
   const [loaded, setLoaded] = useState(false);
 
@@ -621,6 +629,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(START_TAB_KEY, tab);
   }, []);
 
+  // 残りの音声を、いまの速さで割る。待ち行列が変わるたびに出し直す
+  const transcribeEtaSec = useMemo(() => {
+    const audioSec = transcribeQueue.reduce((s, id) => {
+      const r = recordings.find(x => x.id === id);
+      return s + (r ? r.duration / 1000 : 0);
+    }, 0);
+    return Math.ceil(audioSec / Math.max(0.5, speedRef.current));
+  }, [transcribeQueue, recordings]);
+
   const setAutoTranscribe = useCallback((on: boolean) => {
     setAutoTranscribeState(on);
     AsyncStorage.setItem(AUTO_TRANSCRIBE_KEY, String(on));
@@ -672,10 +689,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             at: new Date().toISOString(),
           },
         });
+        const tookSec = (Date.now() - began) / 1000;
+        const audioSec = rec.duration / 1000;
+        if (tookSec > 0.5 && audioSec > 5) speedRef.current = audioSec / tookSec;
         addDebugLogRef.current(
           r.text
             ? `文字起こし: ${rec.filename} ${r.segments?.length ?? 0}区間 ` +
-              `${((Date.now() - began) / 1000).toFixed(1)}秒`
+              `${tookSec.toFixed(1)}秒（実時間の${(audioSec / tookSec).toFixed(0)}倍）`
             : `文字起こし: ${rec.filename} 文字が取れませんでした（無音かもしれません）`);
       } catch (e: any) {
         const msg = e?.message ?? String(e);
@@ -781,6 +801,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         enqueueTranscribe,
         transcribingId,
         transcribePending: transcribeQueue.length,
+        transcribeEtaSec,
         setActiveRecorder,
         runRetention,
       }}
