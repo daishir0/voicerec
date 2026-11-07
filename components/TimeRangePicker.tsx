@@ -130,11 +130,13 @@ type Props = {
   onStop?: () => void;
   /** 録音中など、再生できないとき。ボタンを押せなくするだけで、文言は出さない */
   playDisabled?: boolean;
+  /** しおり（セッションの先頭からの秒）。波形に印を出し、押せば端に入れられる */
+  marks?: number[];
 };
 
 export default function TimeRangePicker({
   levels, startedAt, durationSec, value, onChange, theme, bytesPerSec = 2048,
-  playheadSec = null, playing = null, onPlay, onStop, playDisabled = false,
+  playheadSec = null, playing = null, onPlay, onStop, playDisabled = false, marks = [],
 }: Props) {
   const [edge, setEdge] = useState<'start' | 'end'>('start');
   const [width, setWidth] = useState(0);
@@ -295,6 +297,12 @@ export default function TimeRangePicker({
             borderColor: theme.accent,
           }]} />
         )}
+        {/* しおりの印。範囲の選択より下、再生位置より上に置く */}
+        {width > 0 && durationSec > 0 && marks.map((sec, i) => (
+          <View key={`mark-${i}`} pointerEvents="none" style={[styles.mark, {
+            left: (sec / durationSec) * width, backgroundColor: theme.text,
+          }]} />
+        ))}
         {playheadSec != null && durationSec > 0 && (
           <View pointerEvents="none" style={[styles.playhead, {
             left: (playheadSec / durationSec) * width, backgroundColor: theme.red,
@@ -347,6 +355,26 @@ export default function TimeRangePicker({
         })}
       </View>
 
+      {/* しおりと端。押すと「いま選んでいる側」にその時刻が入る。
+          ダイヤルも波形のドラッグも、これまでどおり使える */}
+      {marks.length > 0 && (
+        <View style={styles.chipRow}>
+          {[{ sec: 0, label: '先頭' },
+            ...marks.map(sec => ({ sec, label: formatDuration(sec) })),
+            { sec: durationSec, label: '末尾' }].map((m, i) => (
+            <Pressable
+              key={`chip-${i}`}
+              onPress={() => onChange(edge === 'start'
+                ? { startSec: Math.min(m.sec, value.endSec), endSec: value.endSec }
+                : { startSec: value.startSec, endSec: Math.max(m.sec, value.startSec) })}
+              style={[styles.chip, { borderColor: theme.border, backgroundColor: theme.bgSecondary }]}
+            >
+              <Text style={{ color: theme.text, fontSize: 12 }}>{m.label}</Text>
+            </Pressable>
+          ))}
+        </View>
+      )}
+
       {/* ダイヤル */}
       <View style={[styles.wheels, { borderColor: theme.border }]}>
         <View pointerEvents="none" style={[styles.selectionBand, {
@@ -377,6 +405,13 @@ const styles = StyleSheet.create({
   handleBar: { width: 5, height: WAVE_H - 16, borderRadius: 3 },
   bars: { flexDirection: 'row', alignItems: 'center', height: '100%', paddingHorizontal: 2 },
   playhead: { position: 'absolute', top: 0, bottom: 0, width: 2, zIndex: 2 },
+  // しおりの印。選択の帯より上、再生位置より下
+  mark: { position: 'absolute', top: 0, bottom: 0, width: 1.5, opacity: 0.55, zIndex: 1 },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  chip: {
+    paddingHorizontal: 10, paddingVertical: 6,
+    borderRadius: 14, borderWidth: StyleSheet.hairlineWidth,
+  },
   selection: {
     position: 'absolute', top: 0, bottom: 0,
     borderLeftWidth: 2, borderRightWidth: 2,

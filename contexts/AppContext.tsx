@@ -7,6 +7,7 @@ import { uploadRecording } from '@/services/upload-service';
 import { log, registerLogListener } from '@/services/logger';
 import type { RecordingQuality } from '@/services/audio-recorder';
 import { recoverOrphanRecordings } from '@/services/recording-guard';
+import { transcribePart } from '@/services/clip-service';
 import {
   applyRetention,
   DEFAULT_RETENTION_DAYS,
@@ -33,6 +34,9 @@ const TRANSCRIBE_LOCALE_KEY = 'rec18082_transcribeLocale';
 const COEXIST_KEY = 'rec18082_coexistWithOtherApps';
 const SEND_TRANSCRIPT_KEY = 'rec18082_sendTranscriptWithUpload';
 const START_TAB_KEY = 'rec18082_startTab';
+const AUTO_TRANSCRIBE_KEY = 'rec18082_autoTranscribe';
+/** まだ文字起こししていない録音の控え。アプリを閉じても続きからやれるように持つ */
+const TRANSCRIBE_QUEUE_KEY = 'rec18082_transcribeQueue';
 const RECORDINGS_DIR = FileSystem.documentDirectory + 'recordings/';
 const LEVELS_DIR = FileSystem.documentDirectory + 'levels/';
 
@@ -77,9 +81,10 @@ interface AppContextType {
     interruptionMode: 'mixWithOthers' | 'doNotMix';
   };
   /** いまどちらのタブが録音しているか。録音機は1つしか動かせない */
-  activeRecorder: 'quick' | 'long' | null;
+  /** 録音中かどうか。録音機は1つしかないので true/null のかわりに名前で持つ */
+  activeRecorder: 'long' | null;
   /** 起動したときに開くタブ */
-  startTab: 'index' | 'clip' | 'recordings';
+  startTab: 'index' | 'recordings';
   /** 保存してある設定を読み終えたか。読む前に画面を組むと既定値で固まる項目がある */
   settingsLoaded: boolean;
   theme: Theme;
@@ -99,11 +104,21 @@ interface AppContextType {
   setTranscribeLocale: (locale: string) => void;
   setCoexistWithOtherApps: (on: boolean) => void;
   setSendTranscriptWithUpload: (on: boolean) => void;
-  setStartTab: (tab: 'index' | 'clip' | 'recordings') => void;
-  setActiveRecorder: (who: 'quick' | 'long' | null) => void;
+  setStartTab: (tab: 'index' | 'recordings') => void;
+  setActiveRecorder: (who: 'long' | null) => void;
   setKeepUnuploaded: (keep: boolean) => void;
   /** いますぐ自動削除を走らせる */
   runRetention: () => Promise<void>;
+
+  /** 録音を区切るたびに、端末内で文字起こしを始めるか */
+  autoTranscribe: boolean;
+  setAutoTranscribe: (on: boolean) => void;
+  /** この録音を文字起こしの順番待ちに入れる */
+  enqueueTranscribe: (id: string) => void;
+  /** いま文字起こししている録音のID。していなければ null */
+  transcribingId: string | null;
+  /** 順番待ちの数（いま処理中のものを含む） */
+  transcribePending: number;
 }
 
 const AppContext = createContext<AppContextType | undefined>(undefined);
@@ -132,8 +147,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [transcribeLocale, setTranscribeLocaleState] = useState('ja-JP');
   const [coexistWithOtherApps, setCoexistState] = useState(true);
   const [sendTranscriptWithUpload, setSendTranscriptState] = useState(true);
-  const [startTab, setStartTabState] = useState<'index' | 'clip' | 'recordings'>('index');
-  const [activeRecorder, setActiveRecorder] = useState<'quick' | 'long' | null>(null);
+  const [startTab, setStartTabState] = useState<'index' | 'recordings'>('index');
+  const [autoTranscribe, setAutoTranscribeState] = useState(true);
+  const [transcribeQueue, setTranscribeQueue] = useState<string[]>([]);
+  const [transcribingId, setTranscribingId] = useState<string | null>(null);
+  const [activeRecorder, setActiveRecorder] = useState<'long' | null>(null);
   const [loaded, setLoaded] = useState(false);
 
   // Refs で常に最新の値を参照できるようにする
@@ -187,8 +205,22 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const savedSendTranscript = await AsyncStorage.getItem(SEND_TRANSCRIPT_KEY);
       if (savedSendTranscript === 'false') setSendTranscriptState(false);
       const savedTab = await AsyncStorage.getItem(START_TAB_KEY);
-      if (savedTab === 'clip' || savedTab === 'recordings' || savedTab === 'index') {
-        setStartTabState(savedTab);
+      // 'clip' は「録音」タブに統合された。古い設定はそこへ寄せる
+      if (savedTab === 'recordings') setStartTabState('recordings');
+      else if (savedTab === 'clip' || savedTab === 'index') setStartTabState('index');
+
+      const savedAuto = await AsyncStorage.getItem(AUTO_TRANSCRIBE_KEY);
+      if (savedAuto === 'false') setAutoTranscribeState(false);
+
+      // アプリが閉じられて途中で終わったぶんを拾い直す
+      const savedQueue = await AsyncStorage.getItem(TRANSCRIBE_QUEUE_KEY);
+      if (savedQueue) {
+        try {
+          const ids = JSON.parse(savedQueue);
+          if (Array.isArray(ids)) setTranscribeQueue(ids.filter((x) => typeof x === 'string'));
+        } catch {
+          // 壊れていたら捨てる。文字起こしは画面からやり直せる
+        }
       }
       const days = Number(savedRetention);
       if ((RETENTION_CHOICES as readonly number[]).includes(days)) {
@@ -376,6 +408,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     setRecordings(next);
     await saveRecordings(next);
   }, []);
+
+  // 裏で動く文字起こしから使う。待ち行列の effect を作り直させたくないので ref で渡す
+  const updateRecordingRef = useRef(updateRecording);
+  updateRecordingRef.current = updateRecording;
+  const addDebugLogRef = useRef(addDebugLog);
+  addDebugLogRef.current = addDebugLog;
+  const transcribeLocaleRef = useRef(transcribeLocale);
+  transcribeLocaleRef.current = transcribeLocale;
 
   const deleteRecording = useCallback(async (id: string) => {
     const next = recordingsRef.current.filter(r => r.id !== id);
@@ -576,10 +616,78 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(TRANSCRIBE_LOCALE_KEY, locale);
   }, []);
 
-  const setStartTab = useCallback((tab: 'index' | 'clip' | 'recordings') => {
+  const setStartTab = useCallback((tab: 'index' | 'recordings') => {
     setStartTabState(tab);
     AsyncStorage.setItem(START_TAB_KEY, tab);
   }, []);
+
+  const setAutoTranscribe = useCallback((on: boolean) => {
+    setAutoTranscribeState(on);
+    AsyncStorage.setItem(AUTO_TRANSCRIBE_KEY, String(on));
+  }, []);
+
+  const enqueueTranscribe = useCallback((id: string) => {
+    setTranscribeQueue(prev => (prev.includes(id) ? prev : [...prev, id]));
+  }, []);
+
+  // 順番待ちは控えておく。長い録音の途中でアプリが閉じられても、次に開いたときに続けられる
+  useEffect(() => {
+    AsyncStorage.setItem(TRANSCRIBE_QUEUE_KEY, JSON.stringify(transcribeQueue)).catch(() => {});
+  }, [transcribeQueue]);
+
+  /**
+   * 文字起こしを1本ずつ処理する。
+   *
+   * ⚠️ **同時に動かさない。** SpeechAnalyzer は端末の資源を使うので、複数走らせると
+   *    録音そのものが詰まる。順番待ちにして1本ずつ片づける。
+   * ⚠️ 失敗した録音は**待ち行列から外す**。外さないと、読めないファイルで
+   *    同じ失敗を回り続ける。やり直しは画面から頼める。
+   */
+  const runningRef = useRef(false);
+  useEffect(() => {
+    if (runningRef.current) return;
+    const id = transcribeQueue[0];
+    if (!id) return;
+
+    const rec = recordingsRef.current.find(r => r.id === id);
+    // もう消えている／すでに文字がある録音は、黙って飛ばす
+    if (!rec || rec.transcript?.text) {
+      setTranscribeQueue(prev => prev.filter(x => x !== id));
+      return;
+    }
+
+    runningRef.current = true;
+    setTranscribingId(id);
+    (async () => {
+      const began = Date.now();
+      try {
+        const r = await transcribePart(rec, transcribeLocaleRef.current, 'auto');
+        // ⚠️ 文字が取れなくても結果は残す。残さないと「まだ処理していない」と
+        //    区別がつかず、画面がいつまでも「○/○ まで」と出し続ける。
+        await updateRecordingRef.current(id, {
+          transcript: {
+            text: r.text, engine: r.engine, segments: r.segments,
+            locale: transcribeLocaleRef.current,
+            startSec: 0, endSec: rec.duration / 1000,
+            at: new Date().toISOString(),
+          },
+        });
+        addDebugLogRef.current(
+          r.text
+            ? `文字起こし: ${rec.filename} ${r.segments?.length ?? 0}区間 ` +
+              `${((Date.now() - began) / 1000).toFixed(1)}秒`
+            : `文字起こし: ${rec.filename} 文字が取れませんでした（無音かもしれません）`);
+      } catch (e: any) {
+        const msg = e?.message ?? String(e);
+        addDebugLogRef.current(`文字起こしに失敗: ${rec.filename} ${msg}`);
+        void log(`auto transcribe failed: ${rec.filename}: ${msg}`);
+      } finally {
+        runningRef.current = false;
+        setTranscribingId(null);
+        setTranscribeQueue(prev => prev.filter(x => x !== id));
+      }
+    })();
+  }, [transcribeQueue]);
 
   const setSendTranscriptWithUpload = useCallback((on: boolean) => {
     setSendTranscriptState(on);
@@ -668,6 +776,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setCoexistWithOtherApps,
         setSendTranscriptWithUpload,
         setStartTab,
+        autoTranscribe,
+        setAutoTranscribe,
+        enqueueTranscribe,
+        transcribingId,
+        transcribePending: transcribeQueue.length,
         setActiveRecorder,
         runRetention,
       }}

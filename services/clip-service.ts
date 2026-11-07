@@ -110,6 +110,22 @@ export async function createClipForUpload(
 }
 
 /**
+ * 録った断片を、そのまま端末内で文字起こしする。
+ *
+ * ⚠️ 範囲を切り出してから起こす（transcribeRange）のとは違い、**中間ファイルを作らない**。
+ * 断片まるごとなら元のファイルをそのまま渡せるので、切り出しの時間もディスクも要らない。
+ * 「ここまでを確定する」と「停止」のたびにこれを裏で走らせておけば、
+ * 範囲を選ぶときには結果が揃っていて、待たされない。
+ */
+export async function transcribePart(
+  rec: RecordingEntry,
+  locale: string,
+  engine: 'auto' | 'analyzer' | 'sf' = 'auto',
+): Promise<TranscribeResult> {
+  return await VoicerecAudio.transcribe(rec.uri, locale, engine);
+}
+
+/**
  * 範囲を端末内で文字起こしする。
  *
  * ⚠️ **中間ファイルは m4a にする。** 以前は 16kHz/16bit の WAV に展開していたが、

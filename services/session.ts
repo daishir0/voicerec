@@ -33,8 +33,10 @@ export type Session = {
   fileSize: number;
   /** 区切られた回数（0 なら1本もの） */
   splits: number;
-  /** 最後に文字起こしした結果（どれかが持っていれば） */
-  transcript?: RecordingEntry['transcript'];
+  /** 文字起こしの処理が済んだ断片の数（無音で文字が出なかったものも含む） */
+  transcribed: number;
+  /** しおり。セッションの先頭からの秒。小さい順 */
+  marks: number[];
 };
 
 function startOf(r: RecordingEntry): number {
@@ -52,8 +54,10 @@ function endOf(r: RecordingEntry): number {
  *    前の録音の終わりと次の録音の始まりが連続しているかで判断する。
  */
 export function buildSessions(recordings: RecordingEntry[]): Session[] {
+  // ⚠️ 'quick' も混ぜる。1ボタン録音だった頃の録音も、1ファイルのセッションとして
+  //    扱えば範囲を選べるし文字起こしもできる。別物にしておく理由がない。
   const longs = recordings
-    .filter(r => r.kind === 'long')
+    .filter(r => r.kind === 'long' || r.kind === 'quick')
     .sort((a, b) => startOf(a) - startOf(b));
 
   const groups: RecordingEntry[][] = [];
@@ -62,6 +66,8 @@ export function buildSessions(recordings: RecordingEntry[]): Session[] {
     const prev = g?.[g.length - 1];
     const continues =
       prev &&
+      // 1ボタン録音は、たまたま時刻が続いていても別の録音。繋げない
+      r.kind === 'long' && prev.kind === 'long' &&
       (r.sessionId && prev.sessionId
         ? r.sessionId === prev.sessionId
         : Math.abs(startOf(r) - endOf(prev)) <= GAP_TOLERANCE_SEC * 1000);
@@ -85,7 +91,12 @@ export function buildSessions(recordings: RecordingEntry[]): Session[] {
         audioSec: parts.reduce((s, r) => s + r.duration, 0) / 1000,
         fileSize: parts.reduce((s, r) => s + (r.fileSize || 0), 0),
         splits: parts.length - 1,
-        transcript: parts.map(r => r.transcript).filter(Boolean).pop(),
+        transcribed: parts.filter(r => r.transcript).length,
+        // しおりは断片ごとに「その断片の先頭から」で持っているので、
+        // セッションの先頭からの秒に直してから1本にまとめる
+        marks: parts
+          .flatMap(rec => (rec.marks ?? []).map(sec => (startOf(rec) - base) / 1000 + sec))
+          .sort((a, b) => a - b),
       };
     })
     .reverse();
@@ -200,4 +211,64 @@ export function piecesForRangeHealthy(
 ): ClipPiece[] {
   const broken = new Set(health.filter(h => !h.readable).map(h => h.uri));
   return piecesForRange(session, startSec, endSec).filter(p => !broken.has(p.uri));
+}
+
+/** 範囲ぶんの文字起こし。断片ごとの結果をつないだもの */
+export type ComposedTranscript = {
+  text: string;
+  /** 秒は **範囲の先頭から**。送信時の Segment がこの形を要求する */
+  segments: { text: string; startSec: number; endSec: number }[];
+  engine: string;
+  /** この範囲に関わる断片のうち、文字起こしが終わっている数 */
+  done: number;
+  total: number;
+};
+
+/**
+ * 断片ごとの文字起こしを、選んだ範囲に合わせて1本につなぐ。
+ *
+ * 各断片の segments は **その断片の先頭から** の秒なので、
+ * セッション上の位置（offsetSec）を足してから範囲で切り、
+ * 最後に範囲の先頭を引いて返す。
+ *
+ * ⚠️ 切り出してから文字起こしするのではなく、**録った断片をそのつど文字にしておいて、
+ *    選ぶときはつなぐだけ**にしてある。範囲を変えるたびに待たされない。
+ */
+export function transcriptForRange(
+  session: Session, startSec: number, endSec: number,
+): ComposedTranscript | null {
+  const out: ComposedTranscript['segments'] = [];
+  let engine = '';
+  let done = 0;
+  let total = 0;
+
+  for (const part of session.parts) {
+    const partStart = part.offsetSec;
+    const partEnd = part.offsetSec + part.durationSec;
+    // 範囲にかすりもしない断片は数にも入れない
+    if (partEnd <= startSec || partStart >= endSec) continue;
+    total++;
+
+    const tr = part.rec.transcript;
+    // 処理が済んでいない断片はまだ数に入れない（画面の「○/○ まで」の分母になる）
+    if (!tr) continue;
+    done++;
+    if (!tr.text) continue;
+    if (!engine) engine = tr.engine;
+
+    for (const s of tr.segments ?? []) {
+      const at = partStart + s.startSec;
+      const to = partStart + s.endSec;
+      if (to <= startSec || at >= endSec) continue;
+      out.push({ text: s.text, startSec: at - startSec, endSec: to - startSec });
+    }
+    // 区間が無い（古い形式の）結果は、断片まるごとが範囲に入るときだけ本文を使う
+    if (!tr.segments?.length && partStart >= startSec && partEnd <= endSec) {
+      out.push({ text: tr.text, startSec: partStart - startSec, endSec: partEnd - startSec });
+    }
+  }
+
+  if (total === 0) return null;
+  out.sort((a, b) => a.startSec - b.startSec);
+  return { text: out.map(s => s.text).join(''), segments: out, engine: engine || 'analyzer', done, total };
 }

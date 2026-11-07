@@ -55,10 +55,11 @@ export function RecordingListItem({ recording, onEditName }: RecordingListItemPr
     retryUpload(recording.id);
   };
 
-  // 長い録音は、押したら「切り出し」タブでその録音を開く。
+  // 押したら「録音」タブでその録音を開く。
   // 一覧は録音を探す場所なので、ここが範囲選択への自然な入口になる。
-  const openInClip = recording.kind === 'long'
-    ? () => router.navigate({ pathname: '/clip', params: { session: recording.id } })
+  // 1ボタン録音だった頃の録音も、いまは同じ画面で範囲を選べる。
+  const openInClip = recording.kind === 'long' || recording.kind === 'quick'
+    ? () => router.navigate({ pathname: '/', params: { session: recording.id } })
     : undefined;
 
   return (

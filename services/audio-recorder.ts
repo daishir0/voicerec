@@ -1,8 +1,9 @@
-// Whisper最低ライン録音プリセット
-// M4A (AAC), 12kHz, モノラル, 16kbps — Whisper最小サイズ (~120KB/分)
-// フォールバック: HIGH_QUALITY (44.1kHz, ステレオ, 128kbps)
+// 録音の設定。
+// 12kHz / モノラル / 16kbps の AAC（約120KB/分）。文字起こしに必要十分な下限。
+// ⚠️ 実際に録るのは下の CAF_PRESET のほう。m4a は停止時にしか索引を書かないので、
+//    録音中に読めず、範囲の切り出しができない。中身の AAC は同じなので容量は変わらない。
 
-import { RecordingPresets, IOSOutputFormat, AudioQuality } from 'expo-audio';
+import { IOSOutputFormat, AudioQuality } from 'expo-audio';
 import type { RecordingOptions } from 'expo-audio';
 
 export const WHISPER_PRESET: RecordingOptions = {
@@ -53,20 +54,10 @@ export const WHISPER_HIGH_QUALITY_PRESET: RecordingOptions = {
   },
 };
 
-export const FALLBACK_PRESET = RecordingPresets.HIGH_QUALITY;
-
 export type RecordingQuality = 'standard' | 'high';
 
 export function getPresetForQuality(quality: RecordingQuality): RecordingOptions {
   return quality === 'high' ? WHISPER_HIGH_QUALITY_PRESET : WHISPER_PRESET;
-}
-
-export function getFileExtension(): string {
-  return '.m4a';
-}
-
-export function getMimeType(): string {
-  return 'audio/mp4';
 }
 
 // ── 長時間録音の検証用プリセット（2026-10-21 追加）──────────────────────

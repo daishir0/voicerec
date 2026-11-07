@@ -49,6 +49,8 @@ export default function SettingsScreen() {
     setTranscribeLocale,
     sendTranscriptWithUpload,
     setSendTranscriptWithUpload,
+    autoTranscribe,
+    setAutoTranscribe,
     coexistWithOtherApps,
     setCoexistWithOtherApps,
     startTab,
@@ -212,7 +214,7 @@ export default function SettingsScreen() {
             </Text>
           </View>
           <View style={styles.retentionRow}>
-            {([['index', 'クイック録音'], ['clip', '切り出し'], ['recordings', '録音一覧']] as const).map(
+            {([['index', '録音'], ['recordings', '録音一覧']] as const).map(
               ([id, label]) => {
                 const on = startTab === id;
                 return (
@@ -259,7 +261,7 @@ export default function SettingsScreen() {
               文字起こしの言語
             </Text>
             <Text style={[styles.qualityHint, { color: theme.textSecondary }]}>
-              「切り出し」タブで端末内の文字起こしに使う言語です
+              録音を文字にするときの言語です。端末の中で処理します
             </Text>
           </View>
           <View style={styles.retentionRow}>
@@ -278,6 +280,25 @@ export default function SettingsScreen() {
                 </Pressable>
               );
             })}
+          </View>
+
+          {/* 録音を区切るたびに、端末内で文字起こしを始めるか */}
+          <View style={[styles.debugToggleRow, { marginTop: 18 }]}>
+            <View style={{ flex: 1, paddingRight: 12 }}>
+              <Text style={[styles.label, { color: theme.textSecondary, marginTop: 0 }]}>
+                録音を止めたら自動で文字起こし
+              </Text>
+              <Text style={[styles.qualityHint, { color: theme.textSecondary }]}>
+                {autoTranscribe
+                  ? '録音を止めたら、端末の中で文字にします。通信もAPI費用もかかりません。'
+                  : '自動では行いません。録音の ⋯ から「文字起こしをやり直す」で始められます。'}
+              </Text>
+            </View>
+            <Switch
+              value={autoTranscribe}
+              onValueChange={setAutoTranscribe}
+              trackColor={{ false: theme.bgTertiary, true: theme.accent }}
+            />
           </View>
 
           {/* 端末で作った文字起こしを、音声と一緒にサーバーへ送るか */}
