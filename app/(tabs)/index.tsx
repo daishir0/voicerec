@@ -25,7 +25,7 @@ import {
 import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
-import { useLocalSearchParams } from 'expo-router';
+import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useApp } from '@/contexts/AppContext';
 import TimeRangePicker, {
   formatClock, formatDuration, type PlayRequest, type PlayTarget, type Range,
@@ -90,6 +90,7 @@ export default function RecordScreen() {
 
   // 録音一覧からこのタブへ来たとき、その録音を開く
   const params = useLocalSearchParams<{ session?: string }>();
+  const router = useRouter();
   const [sourceId, setSourceId] = useState<string | null>(null);
   const [levels, setLevels] = useState<Uint8Array>(new Uint8Array(0));
   const [range, setRange] = useState<Range>({ startSec: 0, endSec: 0 });
@@ -124,12 +125,20 @@ export default function RecordScreen() {
     [sessions, sourceId],
   );
 
-  // 一覧で選ばれた録音が含まれるセッションに合わせる
+  /**
+   * 一覧で選ばれた録音が含まれるセッションに合わせる。
+   *
+   * ⚠️ **合わせたらパラメータを消す。** 消さないと、この効果は sessions に依存している
+   *    ので**録音を1本録るたびに再実行され、さっき録ったものから一覧で開いた古い録音へ
+   *    引き戻してしまう**（2026-11-07、録って止めたのに午前の録音が出たままだった）。
+   *    一度使ったら役目は終わり。もう一度同じ録音を開きたければ、一覧でまた押せばよい。
+   */
   useEffect(() => {
     if (!params.session) return;
     const hit = sessions.find(s => s.parts.some(p => p.rec.id === params.session));
     if (hit) setSourceId(hit.id);
-  }, [params.session, sessions]);
+    router.setParams({ session: undefined });
+  }, [params.session, sessions, router]);
 
   // 再生して確かめる。
   //
