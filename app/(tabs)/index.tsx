@@ -70,6 +70,16 @@ function describeDay(d: Date): string {
   return `${d.getMonth() + 1}/${d.getDate()} ${hm}`;
 }
 
+/** 「およそ3分」「およそ1時間20分」。秒まで出しても当たらない */
+function roughly(sec: number): string {
+  if (sec < 60) return 'まもなく終わります';
+  const m = Math.round(sec / 60);
+  if (m < 60) return `およそ${m}分`;
+  const h = Math.floor(m / 60);
+  const rest = m % 60;
+  return rest > 0 ? `およそ${h}時間${rest}分` : `およそ${h}時間`;
+}
+
 function stamp(d: Date): string {
   const p = (n: number) => String(n).padStart(2, '0');
   return `${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}-${p(d.getHours())}${p(d.getMinutes())}${p(d.getSeconds())}`;
@@ -79,8 +89,8 @@ export default function RecordScreen() {
   const {
     theme, recordings, addRecording, updateRecording, deleteRecording, uploadPending,
     recordingQuality, transcribeLocale, setActiveRecorder, addDebugLog,
-    runRetention, coexistWithOtherApps, recordingAudioMode, sendTranscriptWithUpload,
-    autoTranscribe, enqueueTranscribe, transcribePending,
+    runRetention, coexistWithOtherApps, recordingAudioMode,
+    autoTranscribe, enqueueTranscribe, transcribePending, transcribeEtaSec,
   } = useApp();
 
   const recorder = useAudioRecorder(
@@ -556,6 +566,15 @@ export default function RecordScreen() {
    * 文字起こしをやり直す。言語を変えたときや、うまく取れなかったときのため。
    * 範囲に関わる断片をまとめて待ち行列へ戻す。
    */
+  /**
+   * 選んだ範囲の文字起こしが、関わる断片すべてで済んでいるか。
+   * 済むまで送信は押せない。音声だけ送るとサーバーが OpenAI で同じことをやり直す。
+   */
+  const ready = !!transcript && transcript.done >= transcript.total;
+  /** いま待ち行列が動いているか。動いていないのに未完なら、失敗して止まっている */
+  const working = transcribePending > 0;
+  const stalled = !!source && !ready && !working;
+
   /** 全体が選ばれているか。1秒の差は丸める */
   const wholeSelected = !!source
     && range.startSec < 1 && Math.abs(range.endSec - source.totalSec) < 1;
@@ -605,7 +624,8 @@ export default function RecordScreen() {
     setBusy('切り出してアップロード中…');
     try {
       // 端末で起こした文字があれば一緒に送る。秒はすでに範囲の先頭からの値になっている
-      const attach = sendTranscriptWithUpload && transcript?.text
+      // 文字が無いまま送ることはしない（送信ボタンがそれを許さない）
+      const attach = transcript?.text
         ? {
             text: transcript.text,
             segments: transcript.segments,
@@ -634,7 +654,7 @@ export default function RecordScreen() {
       setBusy(null);
     }
   }, [source, range, addRecording, uploadPending, addDebugLog, health,
-      sendTranscriptWithUpload, transcribeLocale, transcript]);
+      transcribeLocale, transcript]);
 
   // ⚠️ プレイヤーの currentTime は**いま鳴らしているファイルの中の位置**。
   //    セッションは複数ファイルに分かれうるので、全体の時間に直さないと巻き戻って見える。
@@ -857,28 +877,57 @@ export default function RecordScreen() {
             )}
           </View>
 
-          {transcript && transcript.done < transcript.total && (
+          {/* ⚠️ 画面は塞がない。塞いでいたころは、録り終えた直後に何もできなかった。
+              止めるのは「サーバーへ送る」だけで、範囲選び・再生・録音は続けられる */}
+          {working && (
             <View style={[styles.progressRow, { backgroundColor: theme.bgTertiary }]}>
               <ActivityIndicator size="small" color={theme.accent} />
               <Text style={{ color: theme.text, fontSize: 12, flex: 1 }}>
-                文字起こし中… {transcript.done}/{transcript.total} 件
+                文字にしています…
+                {transcript && transcript.total > 1 ? ` ${transcript.done}/${transcript.total}件` : ''}
+                {transcribeEtaSec > 0 ? ` ・ ${roughly(transcribeEtaSec)}` : ''}
               </Text>
             </View>
           )}
 
-          {/* 主操作はこれ1つ。文字起こしは自動なのでボタンが要らない */}
+          {/* 動いていないのに済んでいない＝失敗して止まっている。待てと言わずに手を出す */}
+          {stalled && (
+            <Pressable
+              onPress={() => { void redoTranscribe(); }}
+              style={[styles.progressRow, { backgroundColor: theme.bgTertiary }]}
+            >
+              <Ionicons name="refresh-outline" size={16} color={theme.accent} />
+              <Text style={{ color: theme.text, fontSize: 12, flex: 1 }}>
+                この範囲はまだ文字になっていません
+              </Text>
+              <Text style={{ color: theme.accent, fontSize: 13 }}>文字にする</Text>
+            </Pressable>
+          )}
+
+          {/* ⚠️ **文字起こしが済むまで送らせない。** 音声だけ送ると、サーバーが
+              OpenAI を使って同じことをやり直す。端末で作った文字を必ず添える */}
           <Pressable
             onPress={doUpload}
-            disabled={!!busy}
-            style={[styles.sendBtn, { backgroundColor: theme.accent, opacity: busy ? 0.5 : 1 }]}
+            disabled={!!busy || !ready}
+            style={[styles.sendBtn, {
+              backgroundColor: ready ? theme.accent : theme.bgTertiary,
+              opacity: busy ? 0.5 : 1,
+            }]}
           >
-            <Ionicons name="cloud-upload-outline" size={20} color="#fff" />
+            <Ionicons
+              name="cloud-upload-outline" size={20}
+              color={ready ? '#fff' : theme.textSecondary}
+            />
             <View style={{ flex: 1 }}>
-              <Text style={[styles.actionLabel, { color: '#fff' }]}>サーバーへ送る</Text>
-              <Text style={[styles.actionHint, { color: '#fff' }]}>
-                {sendTranscriptWithUpload && transcript?.text
+              <Text style={[styles.actionLabel, { color: ready ? '#fff' : theme.textSecondary }]}>
+                サーバーへ送る
+              </Text>
+              <Text style={[styles.actionHint, { color: ready ? '#fff' : theme.textSecondary }]}>
+                {ready
                   ? '文字起こしも一緒に送ります'
-                  : '送信後にサーバー側で文字起こしされます'}
+                  : stalled
+                    ? '先に文字起こしをしてください'
+                    : '文字起こしが終わるまで待ってください'}
               </Text>
             </View>
           </Pressable>

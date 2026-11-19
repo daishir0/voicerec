@@ -32,7 +32,6 @@ const RETENTION_DAYS_KEY = 'rec18082_retentionDays';
 const KEEP_UNUPLOADED_KEY = 'rec18082_keepUnuploaded';
 const TRANSCRIBE_LOCALE_KEY = 'rec18082_transcribeLocale';
 const COEXIST_KEY = 'rec18082_coexistWithOtherApps';
-const SEND_TRANSCRIPT_KEY = 'rec18082_sendTranscriptWithUpload';
 const START_TAB_KEY = 'rec18082_startTab';
 const AUTO_TRANSCRIBE_KEY = 'rec18082_autoTranscribe';
 /** まだ文字起こししていない録音の控え。アプリを閉じても続きからやれるように持つ */
@@ -71,7 +70,6 @@ interface AppContextType {
    */
   coexistWithOtherApps: boolean;
   /** 端末で作った文字起こしも一緒に送り、サーバーでの作り直しを省く */
-  sendTranscriptWithUpload: boolean;
   /** 録音を始めるときに渡す音声モード。設定を1箇所にまとめる */
   recordingAudioMode: {
     allowsRecording: true;
@@ -103,7 +101,6 @@ interface AppContextType {
   setRetentionDays: (days: RetentionDays) => void;
   setTranscribeLocale: (locale: string) => void;
   setCoexistWithOtherApps: (on: boolean) => void;
-  setSendTranscriptWithUpload: (on: boolean) => void;
   setStartTab: (tab: 'index' | 'recordings') => void;
   setActiveRecorder: (who: 'long' | null) => void;
   setKeepUnuploaded: (keep: boolean) => void;
@@ -148,7 +145,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [keepUnuploaded, setKeepUnuploadedState] = useState(true);
   const [transcribeLocale, setTranscribeLocaleState] = useState('ja-JP');
   const [coexistWithOtherApps, setCoexistState] = useState(true);
-  const [sendTranscriptWithUpload, setSendTranscriptState] = useState(true);
   const [startTab, setStartTabState] = useState<'index' | 'recordings'>('index');
   const [autoTranscribe, setAutoTranscribeState] = useState(true);
   const [transcribeQueue, setTranscribeQueue] = useState<string[]>([]);
@@ -210,8 +206,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const savedCoexist = await AsyncStorage.getItem(COEXIST_KEY);
       if (savedCoexist === 'false') setCoexistState(false);
 
-      const savedSendTranscript = await AsyncStorage.getItem(SEND_TRANSCRIPT_KEY);
-      if (savedSendTranscript === 'false') setSendTranscriptState(false);
       const savedTab = await AsyncStorage.getItem(START_TAB_KEY);
       // 'clip' は「録音」タブに統合された。古い設定はそこへ寄せる
       if (savedTab === 'recordings') setStartTabState('recordings');
@@ -709,11 +703,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     })();
   }, [transcribeQueue]);
 
-  const setSendTranscriptWithUpload = useCallback((on: boolean) => {
-    setSendTranscriptState(on);
-    AsyncStorage.setItem(SEND_TRANSCRIPT_KEY, String(on));
-  }, []);
-
   const setCoexistWithOtherApps = useCallback((on: boolean) => {
     setCoexistState(on);
     AsyncStorage.setItem(COEXIST_KEY, String(on));
@@ -772,7 +761,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         keepUnuploaded,
         transcribeLocale,
         coexistWithOtherApps,
-        sendTranscriptWithUpload,
         recordingAudioMode,
         activeRecorder,
         startTab,
@@ -794,7 +782,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setKeepUnuploaded,
         setTranscribeLocale,
         setCoexistWithOtherApps,
-        setSendTranscriptWithUpload,
         setStartTab,
         autoTranscribe,
         setAutoTranscribe,

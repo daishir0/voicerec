@@ -3,7 +3,6 @@ import { DarkTheme, DefaultTheme, ThemeProvider } from '@react-navigation/native
 import { Stack } from 'expo-router';
 import { StatusBar } from 'expo-status-bar';
 import { AppProvider, useApp } from '@/contexts/AppContext';
-import { TranscribingOverlay } from '@/components/TranscribingOverlay';
 
 export default function RootLayout() {
   return (
@@ -30,8 +29,6 @@ function Shell() {
         <Stack.Screen name="diagnostics" options={{ presentation: 'modal', headerShown: false }} />
       </Stack>
       <StatusBar style={isDarkMode ? 'light' : 'dark'} />
-      {/* どのタブにいても覆えるよう、画面の一番外側に置く */}
-      <TranscribingOverlay />
     </ThemeProvider>
   );
 }
