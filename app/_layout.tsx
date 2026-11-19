@@ -27,6 +27,7 @@ function Shell() {
         <Stack.Screen name="(tabs)" options={{ headerShown: false }} />
         <Stack.Screen name="settings" options={{ presentation: 'modal', headerShown: false }} />
         <Stack.Screen name="diagnostics" options={{ presentation: 'modal', headerShown: false }} />
+        <Stack.Screen name="transcript" options={{ headerShown: false }} />
       </Stack>
       <StatusBar style={isDarkMode ? 'light' : 'dark'} />
     </ThemeProvider>

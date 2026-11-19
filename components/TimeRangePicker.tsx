@@ -48,10 +48,6 @@ export function formatClock(base: Date, offsetSec: number, withSeconds = true): 
   return withSeconds ? `${hm}:${two(d.getSeconds())}` : hm;
 }
 
-function formatSize(bytes: number): string {
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(0)}KB`;
-  return `${(bytes / 1024 / 1024).toFixed(1)}MB`;
-}
 
 /** 1本のダイヤル。スクロールを項目の高さに吸着させるだけの軽い作り。 */
 function Wheel({ values, value, onChange, theme, suffix }: {
@@ -123,7 +119,6 @@ type Props = {
   value: Range;
   onChange: (next: Range) => void;
   theme: Theme;
-  bytesPerSec?: number;
   playheadSec?: number | null;
   playing?: PlayTarget | null;
   onPlay?: (req: PlayRequest) => void;
@@ -135,7 +130,7 @@ type Props = {
 };
 
 export default function TimeRangePicker({
-  levels, startedAt, durationSec, value, onChange, theme, bytesPerSec = 2048,
+  levels, startedAt, durationSec, value, onChange, theme,
   playheadSec = null, playing = null, onPlay, onStop, playDisabled = false, marks = [],
 }: Props) {
   const [edge, setEdge] = useState<'start' | 'end'>('start');
@@ -247,7 +242,6 @@ export default function TimeRangePicker({
     }
   }, [at, startedAt, durationSec, edge, value, onChange]);
 
-  const selectedSec = Math.max(0, shown.endSec - shown.startSec);
   const bars = useMemo(
     () => downsample(levels, Math.max(1, Math.floor(width / 3))),
     [levels, width],
@@ -269,17 +263,8 @@ export default function TimeRangePicker({
 
   return (
     <View>
-      {/* いま選んでいる範囲 */}
-      <View style={styles.summary}>
-        <Text style={[styles.range, { color: theme.text }]}>
-          {formatClock(startedAt, shown.startSec)}
-          <Text style={{ color: theme.textSecondary }}> → </Text>
-          {formatClock(startedAt, shown.endSec)}
-        </Text>
-        <Text style={[styles.hint, { color: theme.textSecondary }]}>
-          {formatDuration(selectedSec)} ・ 約 {formatSize(selectedSec * bytesPerSec)}
-        </Text>
-      </View>
+      {/* ⚠️ 範囲の数字はここに出さない。折りたたみの見出しに同じものが出ており、
+          同じ数字を2か所に置くと、どちらを見ればいいのか分からなくなる（2026-11-19） */}
 
       {/* 波形。見るだけでなく、両端をつまんで範囲を決められる（ダイヤルと同期する） */}
       <View
@@ -322,60 +307,60 @@ export default function TimeRangePicker({
         )}
       </View>
 
-      {/* どちらの端を動かすか。その端を聴くボタンも同じ場所に置く
-          （「どちらの端か」と「その端を聴く」は同じ関心事） */}
-      <View style={[styles.segment, { borderColor: theme.border }]}>
-        {(['start', 'end'] as const).map(e => {
-          const on = edge === e;
-          const sec = e === 'start' ? shown.startSec : shown.endSec;
-          const sounding = playing === e;
-          return (
+      {/* ⚠️ 「どちらの端か」の切替を独立した帯にしない。しおりの列と同じ行に置けば、
+          「開始を選ぶ → その時刻を押す」が1行で終わる（2026-11-19）。
+          押すと、いま選んでいる側にその時刻が入る。波形のドラッグもダイヤルも従来どおり */}
+      <View style={styles.chipRow}>
+        <View style={[styles.edge, { borderColor: theme.accent }]}>
+          {(['start', 'end'] as const).map(e => (
             <Pressable
               key={e}
               onPress={() => setEdge(e)}
-              style={[styles.segmentItem, { backgroundColor: on ? theme.accent : 'transparent' }]}
+              style={[styles.edgeItem, { backgroundColor: edge === e ? theme.accent : 'transparent' }]}
             >
-              <Text style={{ color: on ? '#fff' : theme.text, fontSize: 14, fontWeight: '600' }}>
+              <Text style={{
+                color: edge === e ? '#fff' : theme.accent, fontSize: 12, fontWeight: '600',
+              }}>
                 {e === 'start' ? '開始' : '終了'}
               </Text>
-              <Pressable
-                onPress={() => (sounding ? onStop?.() : onPlay?.({ what: e, fromSec: sec, toSec: null }))}
-                disabled={playDisabled}
-                hitSlop={10}
-                style={{ opacity: playDisabled ? 0.35 : 1 }}
-              >
-                <Ionicons
-                  name={sounding ? 'stop-circle' : 'play-circle'}
-                  size={22}
-                  color={on ? '#fff' : theme.accent}
-                />
-              </Pressable>
-            </Pressable>
-          );
-        })}
-      </View>
-
-      {/* しおりと端。押すと「いま選んでいる側」にその時刻が入る。
-          ダイヤルも波形のドラッグも、これまでどおり使える */}
-      {marks.length > 0 && (
-        <View style={styles.chipRow}>
-          {[{ sec: 0, label: '先頭' },
-            ...marks.map(sec => ({ sec, label: formatDuration(sec) })),
-            { sec: durationSec, label: '末尾' }].map((m, i) => (
-            <Pressable
-              key={`chip-${i}`}
-              onPress={() => onChange(edge === 'start'
-                ? { startSec: Math.min(m.sec, value.endSec), endSec: value.endSec }
-                : { startSec: value.startSec, endSec: Math.max(m.sec, value.startSec) })}
-              style={[styles.chip, { borderColor: theme.border, backgroundColor: theme.bgSecondary }]}
-            >
-              <Text style={{ color: theme.text, fontSize: 12 }}>{m.label}</Text>
             </Pressable>
           ))}
         </View>
-      )}
+        {[{ sec: 0, label: '先頭' },
+          ...marks.map(sec => ({ sec, label: formatDuration(sec) })),
+          { sec: durationSec, label: '末尾' }].map((m, i) => (
+          <Pressable
+            key={`chip-${i}`}
+            onPress={() => onChange(edge === 'start'
+              ? { startSec: Math.min(m.sec, value.endSec), endSec: value.endSec }
+              : { startSec: value.startSec, endSec: Math.max(m.sec, value.startSec) })}
+            style={[styles.chip, { borderColor: theme.border, backgroundColor: theme.bgSecondary }]}
+          >
+            <Text style={{ color: theme.text, fontSize: 12 }}>{m.label}</Text>
+          </Pressable>
+        ))}
+      </View>
 
-      {/* ダイヤル */}
+      {/* ダイヤル。どちらの端を動かしているかと、その端を聴くボタンをここに置く */}
+      <View style={styles.dialHead}>
+        <Text style={{ color: theme.textSecondary, fontSize: 12 }}>
+          {edge === 'start' ? '開始' : '終了'}を動かしています
+        </Text>
+        <Pressable
+          onPress={() => {
+            const sec = edge === 'start' ? shown.startSec : shown.endSec;
+            playing === edge ? onStop?.() : onPlay?.({ what: edge, fromSec: sec, toSec: null });
+          }}
+          disabled={playDisabled}
+          hitSlop={10}
+          style={{ opacity: playDisabled ? 0.35 : 1 }}
+        >
+          <Ionicons
+            name={playing === edge ? 'stop-circle' : 'play-circle'}
+            size={22} color={theme.accent}
+          />
+        </Pressable>
+      </View>
       <View style={[styles.wheels, { borderColor: theme.border }]}>
         <View pointerEvents="none" style={[styles.selectionBand, {
           top: ITEM_H * Math.floor(VISIBLE / 2),
@@ -407,7 +392,13 @@ const styles = StyleSheet.create({
   playhead: { position: 'absolute', top: 0, bottom: 0, width: 2, zIndex: 2 },
   // しおりの印。選択の帯より上、再生位置より下
   mark: { position: 'absolute', top: 0, bottom: 0, width: 1.5, opacity: 0.55, zIndex: 1 },
-  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  chipRow: { flexDirection: 'row', flexWrap: 'wrap', gap: 6, marginTop: 8, alignItems: 'center' },
+  edge: { flexDirection: 'row', borderWidth: 1, borderRadius: 14, overflow: 'hidden' },
+  edgeItem: { paddingHorizontal: 11, paddingVertical: 5 },
+  dialHead: {
+    flexDirection: 'row', alignItems: 'center', justifyContent: 'space-between',
+    marginTop: 10, marginBottom: 2,
+  },
   chip: {
     paddingHorizontal: 10, paddingVertical: 6,
     borderRadius: 14, borderWidth: StyleSheet.hairlineWidth,

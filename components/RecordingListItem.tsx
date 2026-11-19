@@ -93,7 +93,24 @@ export function RecordingListItem({ recording, onEditName }: RecordingListItemPr
       {openInClip && (
         <View style={styles.openRow}>
           <Ionicons name="cut-outline" size={13} color={theme.accent} />
-          <Text style={{ color: theme.accent, fontSize: 12 }}>押すと範囲を選べます</Text>
+          <Text style={{ color: theme.accent, fontSize: 12, flex: 1 }}>押すと範囲を選べます</Text>
+          {/* 読み返すだけなら、録音タブを経由せずここから文字起こしへ行ける */}
+          {recording.transcript?.text && (
+            <Pressable
+              onPress={(e) => {
+                e.stopPropagation();
+                router.push({ pathname: '/transcript', params: { session: recording.id } });
+              }}
+              hitSlop={8}
+              style={styles.readBtn}
+            >
+              <Ionicons name="document-text-outline" size={13} color={theme.accent} />
+              <Text style={{ color: theme.accent, fontSize: 12 }}>
+                {recording.transcript.text.length.toLocaleString()}字
+              </Text>
+              <Ionicons name="chevron-forward" size={13} color={theme.accent} />
+            </Pressable>
+          )}
         </View>
       )}
       <View style={styles.meta}>
@@ -133,6 +150,7 @@ export function RecordingListItem({ recording, onEditName }: RecordingListItemPr
 }
 
 const styles = StyleSheet.create({
+  readBtn: { flexDirection: 'row', alignItems: 'center', gap: 2 },
   openRow: { flexDirection: 'row', alignItems: 'center', gap: 4, marginTop: 2 },
   container: {
     marginHorizontal: 16,

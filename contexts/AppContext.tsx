@@ -34,8 +34,6 @@ const TRANSCRIBE_LOCALE_KEY = 'rec18082_transcribeLocale';
 const COEXIST_KEY = 'rec18082_coexistWithOtherApps';
 const START_TAB_KEY = 'rec18082_startTab';
 const AUTO_TRANSCRIBE_KEY = 'rec18082_autoTranscribe';
-/** まだ文字起こししていない録音の控え。アプリを閉じても続きからやれるように持つ */
-const TRANSCRIBE_QUEUE_KEY = 'rec18082_transcribeQueue';
 const RECORDINGS_DIR = FileSystem.documentDirectory + 'recordings/';
 const LEVELS_DIR = FileSystem.documentDirectory + 'levels/';
 
@@ -110,8 +108,8 @@ interface AppContextType {
   /** 録音を区切るたびに、端末内で文字起こしを始めるか */
   autoTranscribe: boolean;
   setAutoTranscribe: (on: boolean) => void;
-  /** この録音を文字起こしの順番待ちに入れる */
-  enqueueTranscribe: (id: string) => void;
+  /** この録音を文字起こしし直す。結果と失敗の印を消すと、待ち行列に戻る */
+  retryTranscribe: (id: string) => Promise<void>;
   /** いま文字起こししている録音のID。していなければ null */
   transcribingId: string | null;
   /** 順番待ちの数（いま処理中のものを含む） */
@@ -147,7 +145,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [coexistWithOtherApps, setCoexistState] = useState(true);
   const [startTab, setStartTabState] = useState<'index' | 'recordings'>('index');
   const [autoTranscribe, setAutoTranscribeState] = useState(true);
-  const [transcribeQueue, setTranscribeQueue] = useState<string[]>([]);
   const [transcribingId, setTranscribingId] = useState<string | null>(null);
   /**
    * 文字起こしの速さ（音声の秒数 ÷ かかった秒数）。
@@ -213,17 +210,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       const savedAuto = await AsyncStorage.getItem(AUTO_TRANSCRIBE_KEY);
       if (savedAuto === 'false') setAutoTranscribeState(false);
-
-      // アプリが閉じられて途中で終わったぶんを拾い直す
-      const savedQueue = await AsyncStorage.getItem(TRANSCRIBE_QUEUE_KEY);
-      if (savedQueue) {
-        try {
-          const ids = JSON.parse(savedQueue);
-          if (Array.isArray(ids)) setTranscribeQueue(ids.filter((x) => typeof x === 'string'));
-        } catch {
-          // 壊れていたら捨てる。文字起こしは画面からやり直せる
-        }
-      }
       const days = Number(savedRetention);
       if ((RETENTION_CHOICES as readonly number[]).includes(days)) {
         setRetentionDaysState(days as RetentionDays);
@@ -623,6 +609,37 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(START_TAB_KEY, tab);
   }, []);
 
+  const retryTranscribe = useCallback(async (id: string) => {
+    await updateRecordingRef.current(id, { transcript: undefined, transcribeError: undefined });
+  }, []);
+
+  const setAutoTranscribe = useCallback((on: boolean) => {
+    setAutoTranscribeState(on);
+    AsyncStorage.setItem(AUTO_TRANSCRIBE_KEY, String(on));
+  }, []);
+
+  /**
+   * 文字起こしの待ち行列。
+   *
+   * ⚠️ **別に配列を持たない。まだ文字になっていない録音そのものが行列。**
+   *    以前は「入れる処理」が走ったものだけを配列に溜めていたので、
+   *    自動を切っていた時期のもの・保存直後に落ちたもの・この仕組みより前のものが
+   *    永遠に取り残された。導き出せるものを別に持つと、入れ忘れが起きる。
+   *
+   * ⚠️ 失敗したものは `transcribeError` が付くので外れる。付けないと同じ失敗を回り続ける。
+   *
+   * 順番は**録音時刻の新しい順**。長い会議のあとに録った10秒のメモが、
+   * 会議の12分を待たずに読めるようにする。
+   */
+  const transcribeQueue = useMemo(() => {
+    if (!autoTranscribe) return [];
+    return recordings
+      .filter(r => (r.kind === 'long' || r.kind === 'quick') && !r.transcript && !r.transcribeError)
+      .sort((a, b) => new Date(b.startedAt ?? b.createdAt).getTime()
+                    - new Date(a.startedAt ?? a.createdAt).getTime())
+      .map(r => r.id);
+  }, [recordings, autoTranscribe]);
+
   // 残りの音声を、いまの速さで割る。待ち行列が変わるたびに出し直す
   const transcribeEtaSec = useMemo(() => {
     const audioSec = transcribeQueue.reduce((s, id) => {
@@ -631,20 +648,6 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     }, 0);
     return Math.ceil(audioSec / Math.max(0.5, speedRef.current));
   }, [transcribeQueue, recordings]);
-
-  const setAutoTranscribe = useCallback((on: boolean) => {
-    setAutoTranscribeState(on);
-    AsyncStorage.setItem(AUTO_TRANSCRIBE_KEY, String(on));
-  }, []);
-
-  const enqueueTranscribe = useCallback((id: string) => {
-    setTranscribeQueue(prev => (prev.includes(id) ? prev : [...prev, id]));
-  }, []);
-
-  // 順番待ちは控えておく。長い録音の途中でアプリが閉じられても、次に開いたときに続けられる
-  useEffect(() => {
-    AsyncStorage.setItem(TRANSCRIBE_QUEUE_KEY, JSON.stringify(transcribeQueue)).catch(() => {});
-  }, [transcribeQueue]);
 
   /**
    * 文字起こしを1本ずつ処理する。
@@ -659,13 +662,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     if (runningRef.current) return;
     const id = transcribeQueue[0];
     if (!id) return;
-
     const rec = recordingsRef.current.find(r => r.id === id);
-    // もう消えている／すでに文字がある録音は、黙って飛ばす
-    if (!rec || rec.transcript?.text) {
-      setTranscribeQueue(prev => prev.filter(x => x !== id));
-      return;
-    }
+    if (!rec) return;   // 消えていれば、行列は recordings から導くので勝手に外れる
 
     runningRef.current = true;
     setTranscribingId(id);
@@ -682,6 +680,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             startSec: 0, endSec: rec.duration / 1000,
             at: new Date().toISOString(),
           },
+          transcribeError: undefined,
         });
         const tookSec = (Date.now() - began) / 1000;
         const audioSec = rec.duration / 1000;
@@ -693,12 +692,13 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
             : `文字起こし: ${rec.filename} 文字が取れませんでした（無音かもしれません）`);
       } catch (e: any) {
         const msg = e?.message ?? String(e);
+        // ⚠️ 失敗を録音に書き残す。残さないと行列から外れず、同じ失敗を回り続ける
+        await updateRecordingRef.current(id, { transcribeError: msg });
         addDebugLogRef.current(`文字起こしに失敗: ${rec.filename} ${msg}`);
         void log(`auto transcribe failed: ${rec.filename}: ${msg}`);
       } finally {
         runningRef.current = false;
         setTranscribingId(null);
-        setTranscribeQueue(prev => prev.filter(x => x !== id));
       }
     })();
   }, [transcribeQueue]);
@@ -785,7 +785,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         setStartTab,
         autoTranscribe,
         setAutoTranscribe,
-        enqueueTranscribe,
+        retryTranscribe,
         transcribingId,
         transcribePending: transcribeQueue.length,
         transcribeEtaSec,

@@ -22,7 +22,6 @@ import {
   requestRecordingPermissionsAsync, setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus,
   useAudioRecorder, useAudioRecorderState,
 } from 'expo-audio';
-import * as Clipboard from 'expo-clipboard';
 import * as FileSystem from 'expo-file-system/legacy';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
@@ -87,10 +86,10 @@ function stamp(d: Date): string {
 
 export default function RecordScreen() {
   const {
-    theme, recordings, addRecording, updateRecording, deleteRecording, uploadPending,
+    theme, recordings, addRecording, deleteRecording, uploadPending,
     recordingQuality, transcribeLocale, setActiveRecorder, addDebugLog,
     runRetention, coexistWithOtherApps, recordingAudioMode,
-    autoTranscribe, enqueueTranscribe, transcribePending, transcribeEtaSec,
+    autoTranscribe, retryTranscribe, transcribePending, transcribeEtaSec,
   } = useApp();
 
   const recorder = useAudioRecorder(
@@ -105,8 +104,6 @@ export default function RecordScreen() {
   const [levels, setLevels] = useState<Uint8Array>(new Uint8Array(0));
   const [range, setRange] = useState<Range>({ startSec: 0, endSec: 0 });
   const [busy, setBusy] = useState<string | null>(null);
-  // 既定は時刻つき。「どこまで文字になったか」が見えるのがこちらなので
-  const [transcriptMode, setTranscriptMode] = useState<'time' | 'plain'>('time');
   // 範囲選び（波形とダイヤル）は畳んでおく。多くの場合は全体でよい
   const [showRange, setShowRange] = useState(false);
   // 録音しながら、ここまでの文字を見たいとき
@@ -472,9 +469,8 @@ export default function RecordScreen() {
       };
       await addRecording(entry);
       setSourceId(entry.sessionId ?? entry.id);
-      // ⚠️ 区切った／止めたこの瞬間が、文字起こしの合図。押させない。
-      //    長い録音でも、確定するたびに前half分が片づいていく。
-      if (autoTranscribe) enqueueTranscribe(entry.id);
+      // ⚠️ ここで待ち行列に入れる必要は無い。行列は「まだ文字になっていない録音」から
+      //    導いているので、保存した時点で自動的に対象になる。
       await log(`Long recording saved: ${filename} ${fileSize}B ${durationMs}ms`);
       void runRetention();
       return entry;
@@ -488,7 +484,7 @@ export default function RecordScreen() {
       setMarkCount(0);
     }
   }, [recorder, state.durationMillis, addRecording, setActiveRecorder, runRetention,
-      autoTranscribe, enqueueTranscribe]);
+      ]);
 
   const stopRecording = useCallback(async () => {
     await finalizeRecording();
@@ -575,6 +571,37 @@ export default function RecordScreen() {
   const working = transcribePending > 0;
   const stalled = !!source && !ready && !working;
 
+  /**
+   * 見出しの3行目。文字起こしがどこまで進んだかと、押して読めるかを1か所で表す。
+   * 読めるものが1つも無ければ押させない（開いても空の画面になるだけ）。
+   */
+  const canRead = !!transcript && transcript.done > 0 && !!transcript.text;
+  const headState = useMemo(() => {
+    const failed = source?.parts.some(p => p.rec.transcribeError);
+    if (canRead && transcript) {
+      const head = transcript.text.slice(0, 18);
+      return {
+        icon: <Ionicons name="document-text-outline" size={13} color={theme.accent} />,
+        text: `「${head}${transcript.text.length > 18 ? '…' : ''}」`,
+        right: transcript.done < transcript.total
+          ? `${transcript.done}/${transcript.total}件`
+          : `${transcript.text.length.toLocaleString()}字`,
+      };
+    }
+    if (failed || (!working && source)) {
+      return {
+        icon: <Ionicons name="refresh-outline" size={13} color={theme.accent} />,
+        text: 'まだ文字になっていません',
+        right: '',
+      };
+    }
+    return {
+      icon: <ActivityIndicator size="small" color={theme.textSecondary} />,
+      text: `文字にしています…${transcribeEtaSec > 0 ? ` ${roughly(transcribeEtaSec)}` : ''}`,
+      right: '',
+    };
+  }, [canRead, transcript, source, working, transcribeEtaSec, theme]);
+
   /** 全体が選ばれているか。1秒の差は丸める */
   const wholeSelected = !!source
     && range.startSec < 1 && Math.abs(range.endSec - source.totalSec) < 1;
@@ -584,12 +611,10 @@ export default function RecordScreen() {
     const targets = source.parts.filter(
       p => p.offsetSec < range.endSec && p.offsetSec + p.durationSec > range.startSec,
     );
-    for (const p of targets) {
-      await updateRecording(p.rec.id, { transcript: undefined });
-      enqueueTranscribe(p.rec.id);
-    }
+    // 結果と失敗の印を消せば、待ち行列に戻る
+    for (const p of targets) await retryTranscribe(p.rec.id);
     addDebugLog(`文字起こしをやり直します: ${targets.length}件`);
-  }, [source, range, updateRecording, enqueueTranscribe, addDebugLog]);
+  }, [source, range, retryTranscribe, addDebugLog]);
 
   /** この録音に対する、めったに使わない操作をまとめて出す */
   const showMenu = useCallback(() => {
@@ -603,21 +628,13 @@ export default function RecordScreen() {
     options.push({ text: 'やめる', style: 'cancel' });
     Alert.alert(
       `${describeDay(source.startedAt)} の録音`,
+      // 見出しから外した細かい数字は、ここで見られるようにしておく
       `${formatDuration(source.totalSec)} ・ ${formatBytes(source.fileSize)}` +
-      (source.splits > 0 ? ` ・ ${source.splits + 1}つに区切られています` : ''),
+      (source.splits > 0 ? ` ・ ${source.splits + 1}つに区切られています` : '') +
+      (sessions.length > 1 ? `\nほかに${sessions.length - 1}件の録音があります` : ''),
       options,
     );
   }, [source, sessions.length, redoTranscribe, doDelete]);
-
-  /** 範囲に関わる断片の文字起こしを消す */
-  const clearTranscript = useCallback(async () => {
-    if (!source) return;
-    for (const p of source.parts) {
-      if (p.offsetSec < range.endSec && p.offsetSec + p.durationSec > range.startSec) {
-        await updateRecording(p.rec.id, { transcript: undefined });
-      }
-    }
-  }, [source, range, updateRecording]);
 
   const doUpload = useCallback(async () => {
     if (!source) return;
@@ -665,34 +682,6 @@ export default function RecordScreen() {
     if (!piece) return playerStatus.currentTime;
     return piece.sessionStartSec + Math.max(0, playerStatus.currentTime - piece.startSec);
   }, [playing, playerStatus.currentTime]);
-
-  /**
-   * 時刻つきの行を作る。近い区切りはまとめて、1行が短すぎないようにする。
-   * 時刻は「範囲の先頭からの秒」なので、録音全体の時刻に直してから表示する。
-   */
-  const transcriptLines = useMemo(() => {
-    const segs = transcript?.segments;
-    if (!segs?.length) return null;
-    const out: { at: number; text: string }[] = [];
-    for (const s of segs) {
-      const at = range.startSec + s.startSec;
-      const last = out[out.length - 1];
-      // 20秒ぶんたまったら次の行にする（1語ずつ改行すると読めない）
-      if (last && at - last.at < 20) last.text += s.text;
-      else out.push({ at, text: s.text });
-    }
-    return out;
-  }, [transcript?.segments, range.startSec]);
-
-  /** 選んだ範囲のうち、実際に文字が出た割合 */
-  const coverage = useMemo(() => {
-    const segs = transcript?.segments;
-    const span = range.endSec - range.startSec;
-    if (!segs?.length || span <= 0) return null;
-    const voiced = segs.reduce((s, x) => s + Math.max(0, x.endSec - x.startSec), 0);
-    const lastAt = range.startSec + Math.max(...segs.map(x => x.endSec));
-    return { voiced, span, percent: Math.min(100, Math.round((voiced / span) * 100)), lastAt };
-  }, [transcript?.segments, range.startSec, range.endSec]);
 
   const elapsed = Math.floor((state.durationMillis || 0) / 1000);
   const totalSec = source ? source.totalSec : 0;
@@ -801,30 +790,45 @@ export default function RecordScreen() {
         <>
           <View style={[styles.card, { backgroundColor: theme.bgSecondary, borderColor: theme.border }]}>
             <View style={styles.sourceHeader}>
+              {/* ⚠️ ここが文字起こしへの入口。画面の下に別の入口は置かない。
+                  入口が2つあると、どちらが何なのか分からなくなる（2026-11-19）。
+                  3行目がそのまま「いまどこまで文字になったか」と「押せるか」を表す */}
               <Pressable
-                onPress={() => sessions.length > 1 && setPicking(true)}
-                disabled={sessions.length <= 1}
+                onPress={() => canRead && router.push({
+                  pathname: '/transcript', params: { session: source.id },
+                })}
+                disabled={!canRead}
                 style={[styles.sourcePick, {
-                  borderColor: sessions.length > 1 ? theme.accent : 'transparent',
-                  backgroundColor: sessions.length > 1 ? theme.bgTertiary : 'transparent',
+                  borderColor: canRead ? theme.accent : theme.border,
+                  backgroundColor: theme.bgTertiary,
                 }]}
               >
-                <Ionicons name="albums-outline" size={15} color={theme.accent} />
+                <Ionicons name="albums-outline" size={15}
+                  color={canRead ? theme.accent : theme.textSecondary} />
                 <View style={{ flex: 1 }}>
                   <Text style={{ color: theme.text, fontSize: 14, fontWeight: '600' }}>
                     {describeDay(source.startedAt)} の録音
                   </Text>
                   <Text style={[styles.cardTitle, { color: theme.textSecondary }]}>
-                    {formatDuration(totalSec)} ・ {formatBytes(source.fileSize)}
+                    {formatDuration(totalSec)}
                     {health && health.some(h => !h.readable)
                       ? ` ・ ${health.filter(h => !h.readable).length}件が読めません`
                       : ''}
                     {sentFromSource > 0 ? ` ・ ${sentFromSource}件を送信済み` : ''}
-                    {sessions.length > 1 ? ` ・ ほかに${sessions.length - 1}件` : ''}
                   </Text>
+                  <View style={[styles.headState, { borderTopColor: theme.border }]}>
+                    {headState.icon}
+                    <Text style={[styles.cardTitle, { color: theme.textSecondary, flex: 1 }]}
+                      numberOfLines={1}>
+                      {headState.text}
+                    </Text>
+                    {headState.right ? (
+                      <Text style={{ color: theme.accent, fontSize: 11 }}>{headState.right}</Text>
+                    ) : null}
+                  </View>
                 </View>
-                {sessions.length > 1 && (
-                  <Ionicons name="chevron-down" size={16} color={theme.accent} />
+                {canRead && (
+                  <Ionicons name="chevron-forward" size={18} color={theme.accent} />
                 )}
               </Pressable>
               <Pressable onPress={showMenu} hitSlop={10} style={styles.iconBtn}>
@@ -841,8 +845,10 @@ export default function RecordScreen() {
                 name={showRange ? 'chevron-down' : 'chevron-forward'}
                 size={16} color={theme.accent}
               />
-              <Text style={{ color: theme.text, fontSize: 13, flex: 1 }}>
-                {wholeSelected
+              {/* ⚠️ 範囲の数字はここだけに出す。開いた中にも出していたので重複していた */}
+              <Text style={{ color: theme.text, fontSize: 13, flex: 1 }}
+                numberOfLines={1}>
+                {wholeSelected && !showRange
                   ? '全体を選択中'
                   : `${formatClock(source.startedAt, range.startSec)} → ` +
                     `${formatClock(source.startedAt, range.endSec)}`}
@@ -866,7 +872,6 @@ export default function RecordScreen() {
                 value={range}
                 onChange={setRange}
                 theme={theme}
-                bytesPerSec={source.audioSec > 0 ? source.fileSize / source.audioSec : 2048}
                 playheadSec={playheadSec}
                 playing={playing}
                 onPlay={startPlay}
@@ -956,82 +961,8 @@ export default function RecordScreen() {
 
         </>
       )}
-      {source && transcript && transcript.done > 0
-        && (!state.isRecording || showTranscriptWhileRecording) && (
-        <View style={[styles.card, { backgroundColor: theme.bgSecondary, borderColor: theme.border }]}>
-          <View style={styles.transcriptHeader}>
-            <Text style={[styles.cardTitle, { color: theme.textSecondary }]}>
-              文字起こし（端末内）
-              {transcript.done < transcript.total
-                ? ` ・ ${transcript.done}/${transcript.total} まで`
-                : ''}
-            </Text>
-            <View style={styles.transcriptActions}>
-              {transcriptLines && (
-                <Pressable
-                  onPress={() => setTranscriptMode(m => (m === 'time' ? 'plain' : 'time'))}
-                  hitSlop={8}
-                >
-                  <Text style={{ color: theme.accent, fontSize: 13 }}>
-                    {transcriptMode === 'time' ? 'そのまま' : '時刻つき'}
-                  </Text>
-                </Pressable>
-              )}
-              <Pressable onPress={clearTranscript} hitSlop={8}>
-                <Text style={{ color: theme.textSecondary, fontSize: 13 }}>クリア</Text>
-              </Pressable>
-              <Pressable
-                onPress={async () => {
-                  await Clipboard.setStringAsync(transcript.text);
-                  Alert.alert('コピーしました');
-                }}
-                hitSlop={8}
-              >
-                <Text style={{ color: theme.accent, fontSize: 13 }}>コピー</Text>
-              </Pressable>
-            </View>
-          </View>
-          {/* どこまで文字になったか。これが見えないと「全部できたのか」が分からない */}
-          {coverage && source && (
-            <Text style={[styles.cardTitle, { color: theme.textSecondary }]}>
-              {formatDuration(coverage.span)}のうち {formatDuration(coverage.voiced)}
-              （{coverage.percent}%）が文字になりました ・ 最後の文字は{' '}
-              {formatClock(source.startedAt, coverage.lastAt, false)}
-            </Text>
-          )}
-
-          {transcriptMode === 'time' && transcriptLines && source ? (
-            <View>
-              {transcriptLines.map((line, i) => (
-                <View key={i} style={styles.transcriptLine}>
-                  {/* 時刻を押すと、その地点から再生する */}
-                  <Pressable
-                    onPress={() => startPlay({ what: 'segment', fromSec: line.at, toSec: null })}
-                    disabled={state.isRecording}
-                    hitSlop={6}
-                  >
-                    <Text
-                      numberOfLines={1}
-                      style={[styles.transcriptTime, {
-                        color: state.isRecording ? theme.textSecondary : theme.accent,
-                      }]}
-                    >
-                      {formatClock(source.startedAt, line.at, false)}
-                    </Text>
-                  </Pressable>
-                  <Text style={[styles.transcript, { color: theme.text, flex: 1 }]}>
-                    {line.text}
-                  </Text>
-                </View>
-              ))}
-            </View>
-          ) : (
-            <Text style={[styles.transcript, { color: theme.text }]}>
-              {transcript.text || '（音声から文字を取り出せませんでした）'}
-            </Text>
-          )}
-        </View>
-      )}
+      {/* 文字起こしの本文は app/transcript.tsx へ。
+          録音画面に置くと長い録音ほど縦に伸び、下の操作が遠くなっていた */}
       <Modal visible={picking} animationType="slide" transparent onRequestClose={() => setPicking(false)}>
         <Pressable style={styles.modalBack} onPress={() => setPicking(false)}>
           <Pressable style={[styles.sheet, { backgroundColor: theme.bg, borderColor: theme.border }]}>
@@ -1117,6 +1048,10 @@ const styles = StyleSheet.create({
   card: { padding: 14, borderRadius: 12, borderWidth: StyleSheet.hairlineWidth, gap: 8 },
   cardTitle: { fontSize: 12 },
   sourceHeader: { flexDirection: 'row', alignItems: 'center', gap: 4 },
+  headState: {
+    flexDirection: 'row', alignItems: 'center', gap: 6,
+    marginTop: 5, paddingTop: 5, borderTopWidth: StyleSheet.hairlineWidth,
+  },
   iconBtn: { padding: 4 },
   rangeToggle: {
     flexDirection: 'row', alignItems: 'center', gap: 8,
