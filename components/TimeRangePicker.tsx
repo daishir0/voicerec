@@ -57,7 +57,8 @@ function Wheel({ values, value, onChange, theme, suffix }: {
   theme: Theme;
   suffix: string;
 }) {
-  const ref = useRef<ScrollView>(null);
+  // ⚠️ RN 0.88 から ScrollView の ref は ScrollViewInstance。コンポーネント型では受けられない
+  const ref = useRef<React.ComponentRef<typeof ScrollView>>(null);
   const index = Math.max(0, values.indexOf(value));
   const settling = useRef(false);
   // ⚠️ **人が回したときだけ値を変える。**

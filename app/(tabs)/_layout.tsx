@@ -39,8 +39,9 @@ export default function TabLayout() {
         name="index"
         options={{
           title: '録音',
+          // ⚠️ RN 0.88 から色は null を取りうる型になった。Ionicons は受け付けない
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="mic" size={size} color={color} />
+            <Ionicons name="mic" size={size} color={typeof color === 'string' ? color : undefined} />
           ),
         }}
       />
@@ -49,7 +50,7 @@ export default function TabLayout() {
         options={{
           title: '録音一覧',
           tabBarIcon: ({ color, size }) => (
-            <Ionicons name="list" size={size} color={color} />
+            <Ionicons name="list" size={size} color={typeof color === 'string' ? color : undefined} />
           ),
         }}
       />

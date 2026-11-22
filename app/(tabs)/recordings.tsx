@@ -84,6 +84,7 @@ export default function RecordingsScreen() {
     setOpeningServer(false);
   };
 
+  // ⚠️ RN 0.88 の ListFooterComponent は null を受け付けない。渡す側で undefined に直す
   const serverLinkButton = settings.serverUrl ? (
     <Pressable
       style={[styles.serverLink, { borderColor: theme.border }]}
@@ -139,7 +140,7 @@ export default function RecordingsScreen() {
         )}
         stickySectionHeadersEnabled={false}
         contentContainerStyle={{ paddingVertical: 8 }}
-        ListFooterComponent={serverLinkButton}
+        ListFooterComponent={serverLinkButton ?? undefined}
       />
     </View>
   );

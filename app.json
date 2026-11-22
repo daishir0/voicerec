@@ -6,13 +6,7 @@
     "version": "1.3.0",
     "orientation": "portrait",
     "userInterfaceStyle": "automatic",
-    "newArchEnabled": true,
     "icon": "./assets/icon.png",
-    "splash": {
-      "image": "./assets/splash-icon.png",
-      "resizeMode": "contain",
-      "backgroundColor": "#1C1C1E"
-    },
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "jp.path-finder.voicerec",
@@ -47,7 +41,17 @@
       "expo-router",
       "expo-notifications",
       "expo-font",
-      "expo-asset"
+      "expo-asset",
+      "expo-audio",
+      "expo-status-bar",
+      [
+        "expo-splash-screen",
+        {
+          "image": "./assets/splash-icon.png",
+          "resizeMode": "contain",
+          "backgroundColor": "#1C1C1E"
+        }
+      ]
     ],
     "experiments": {
       "typedRoutes": true

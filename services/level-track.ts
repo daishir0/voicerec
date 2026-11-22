@@ -23,16 +23,18 @@ export function meteringToLevel(db: number | null | undefined): number {
   return Math.round(Math.pow((db + 60) / 60, 0.6) * 100);
 }
 
+// ⚠️ `global` と `Buffer` は型に居ない（SDK 58 で @types/node が外れた）。
+//    React Native の実行環境には btoa / atob があるので、そちらを使う。
 function toBase64(bytes: Uint8Array): string {
   let bin = '';
   for (let i = 0; i < bytes.length; i += 0x8000) {
     bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
   }
-  return global.btoa ? global.btoa(bin) : Buffer.from(bin, 'binary').toString('base64');
+  return globalThis.btoa(bin);
 }
 
 function fromBase64(b64: string): Uint8Array {
-  const bin = global.atob ? global.atob(b64) : Buffer.from(b64, 'base64').toString('binary');
+  const bin = globalThis.atob(b64);
   const out = new Uint8Array(bin.length);
   for (let i = 0; i < bin.length; i++) out[i] = bin.charCodeAt(i);
   return out;
