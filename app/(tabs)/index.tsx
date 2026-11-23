@@ -692,6 +692,28 @@ export default function RecordScreen() {
     return recordings.filter(r => r.kind === 'clip' && r.sourceId && ids.has(r.sourceId)).length;
   }, [source, recordings]);
 
+  /**
+   * いま選んでいる範囲を、もう送ってあるか。
+   *
+   * ⚠️ 画面の状態ではなく**送った記録**で判断する。押した直後だけ無効にすると、
+   *    別の録音を見てから戻ってきたときや、アプリを開き直したときに
+   *    また押せてしまい、同じ範囲が二重にサーバーへ乗る。
+   *    切り出しは sourceId と範囲の秒を持っているので、それで照合できる。
+   */
+  const sentState = useMemo((): 'none' | 'sending' | 'sent' => {
+    if (!source) return 'none';
+    const ids = new Set(source.parts.map(p => p.rec.id));
+    const same = recordings.filter(r =>
+      r.kind === 'clip' && r.sourceId && ids.has(r.sourceId)
+      && Math.abs((r.clipStartSec ?? -1) - range.startSec) < 1
+      && Math.abs((r.clipEndSec ?? -1) - range.endSec) < 1);
+    if (same.some(r => r.uploadStatus === 'uploaded')) return 'sent';
+    // ⚠️ 送っている最中も塞ぐ。ここを開けておくと、終わるまでの数秒で二度押せる
+    if (same.some(r => r.uploadStatus === 'waiting' || r.uploadStatus === 'uploading')) return 'sending';
+    return 'none';   // 'failed' だけなら、やり直せるように開けておく
+  }, [source, recordings, range.startSec, range.endSec]);
+  const alreadySent = sentState !== 'none';
+
   return (
     <ScrollView style={{ backgroundColor: theme.bg }} contentContainerStyle={styles.content}>
       {/* 録音 */}
@@ -913,26 +935,37 @@ export default function RecordScreen() {
               OpenAI を使って同じことをやり直す。端末で作った文字を必ず添える */}
           <Pressable
             onPress={doUpload}
-            disabled={!!busy || !ready}
+            disabled={!!busy || !ready || alreadySent}
             style={[styles.sendBtn, {
-              backgroundColor: ready ? theme.accent : theme.bgTertiary,
+              backgroundColor: ready && !alreadySent ? theme.accent : theme.bgTertiary,
               opacity: busy ? 0.5 : 1,
             }]}
           >
             <Ionicons
-              name="cloud-upload-outline" size={20}
-              color={ready ? '#fff' : theme.textSecondary}
+              name={sentState === 'sent' ? 'checkmark-circle-outline' : 'cloud-upload-outline'}
+              size={20}
+              color={ready && !alreadySent ? '#fff' : theme.textSecondary}
             />
             <View style={{ flex: 1 }}>
-              <Text style={[styles.actionLabel, { color: ready ? '#fff' : theme.textSecondary }]}>
-                サーバーへ送る
+              <Text style={[styles.actionLabel, {
+                color: ready && !alreadySent ? '#fff' : theme.textSecondary,
+              }]}>
+                {sentState === 'sent' ? 'サーバーへ送りました'
+                  : sentState === 'sending' ? 'サーバーへ送っています…'
+                    : 'サーバーへ送る'}
               </Text>
-              <Text style={[styles.actionHint, { color: ready ? '#fff' : theme.textSecondary }]}>
-                {ready
-                  ? '文字起こしも一緒に送ります'
-                  : stalled
-                    ? '先に文字起こしをしてください'
-                    : '文字起こしが終わるまで待ってください'}
+              <Text style={[styles.actionHint, {
+                color: ready && !alreadySent ? '#fff' : theme.textSecondary,
+              }]}>
+                {sentState === 'sent'
+                  ? 'この範囲は送信済みです。範囲を変えると送れます'
+                  : sentState === 'sending'
+                    ? 'しばらくお待ちください'
+                    : ready
+                    ? '文字起こしも一緒に送ります'
+                    : stalled
+                      ? '先に文字起こしをしてください'
+                      : '文字起こしが終わるまで待ってください'}
               </Text>
             </View>
           </Pressable>
