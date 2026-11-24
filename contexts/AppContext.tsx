@@ -34,6 +34,7 @@ const TRANSCRIBE_LOCALE_KEY = 'rec18082_transcribeLocale';
 const COEXIST_KEY = 'rec18082_coexistWithOtherApps';
 const START_TAB_KEY = 'rec18082_startTab';
 const AUTO_TRANSCRIBE_KEY = 'rec18082_autoTranscribe';
+const SHOW_RANGE_KEY = 'rec18082_showRange';
 const RECORDINGS_DIR = FileSystem.documentDirectory + 'recordings/';
 const LEVELS_DIR = FileSystem.documentDirectory + 'levels/';
 
@@ -80,7 +81,11 @@ interface AppContextType {
   /** 録音中かどうか。録音機は1つしかないので true/null のかわりに名前で持つ */
   activeRecorder: 'long' | null;
   /** 起動したときに開くタブ */
-  startTab: 'index' | 'recordings';
+  /** 起動したときに開く画面 */
+  startTab: 'index' | 'recordings' | 'transcript';
+  /** 範囲選びを開いたままにしておくか。前回の開閉を覚える */
+  showRange: boolean;
+  setShowRange: (on: boolean) => void;
   /** 保存してある設定を読み終えたか。読む前に画面を組むと既定値で固まる項目がある */
   settingsLoaded: boolean;
   theme: Theme;
@@ -99,7 +104,7 @@ interface AppContextType {
   setRetentionDays: (days: RetentionDays) => void;
   setTranscribeLocale: (locale: string) => void;
   setCoexistWithOtherApps: (on: boolean) => void;
-  setStartTab: (tab: 'index' | 'recordings') => void;
+  setStartTab: (tab: 'index' | 'recordings' | 'transcript') => void;
   setActiveRecorder: (who: 'long' | null) => void;
   setKeepUnuploaded: (keep: boolean) => void;
   /** いますぐ自動削除を走らせる */
@@ -143,7 +148,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
   const [keepUnuploaded, setKeepUnuploadedState] = useState(true);
   const [transcribeLocale, setTranscribeLocaleState] = useState('ja-JP');
   const [coexistWithOtherApps, setCoexistState] = useState(true);
-  const [startTab, setStartTabState] = useState<'index' | 'recordings'>('index');
+  const [startTab, setStartTabState] = useState<'index' | 'recordings' | 'transcript'>('index');
+  const [showRange, setShowRangeState] = useState(false);
   const [autoTranscribe, setAutoTranscribeState] = useState(true);
   const [transcribingId, setTranscribingId] = useState<string | null>(null);
   /**
@@ -206,7 +212,11 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
       const savedTab = await AsyncStorage.getItem(START_TAB_KEY);
       // 'clip' は「録音」タブに統合された。古い設定はそこへ寄せる
       if (savedTab === 'recordings') setStartTabState('recordings');
+      else if (savedTab === 'transcript') setStartTabState('transcript');
       else if (savedTab === 'clip' || savedTab === 'index') setStartTabState('index');
+
+      const savedRange = await AsyncStorage.getItem(SHOW_RANGE_KEY);
+      if (savedRange === 'true') setShowRangeState(true);
 
       const savedAuto = await AsyncStorage.getItem(AUTO_TRANSCRIBE_KEY);
       if (savedAuto === 'false') setAutoTranscribeState(false);
@@ -604,9 +614,14 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     AsyncStorage.setItem(TRANSCRIBE_LOCALE_KEY, locale);
   }, []);
 
-  const setStartTab = useCallback((tab: 'index' | 'recordings') => {
+  const setStartTab = useCallback((tab: 'index' | 'recordings' | 'transcript') => {
     setStartTabState(tab);
     AsyncStorage.setItem(START_TAB_KEY, tab);
+  }, []);
+
+  const setShowRange = useCallback((on: boolean) => {
+    setShowRangeState(on);
+    AsyncStorage.setItem(SHOW_RANGE_KEY, String(on));
   }, []);
 
   const retryTranscribe = useCallback(async (id: string) => {
@@ -764,6 +779,8 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
         recordingAudioMode,
         activeRecorder,
         startTab,
+        showRange,
+        setShowRange,
         settingsLoaded: loaded,
         theme,
         updateSettings: updateSettingsHandler,

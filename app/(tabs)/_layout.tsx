@@ -18,7 +18,9 @@ export default function TabLayout() {
   useEffect(() => {
     if (!settingsLoaded || jumped.current) return;
     jumped.current = true;
-    if (startTab !== 'index') router.replace(`/${startTab}`);
+    // 「最新の文字起こし」はタブではないので、別の経路へ送る
+    if (startTab === 'transcript') router.replace('/transcript');
+    else if (startTab !== 'index') router.replace(`/${startTab}`);
   }, [settingsLoaded, startTab, router]);
 
   // 読み終える前に出すと「録音」が一瞬見えてから飛ぶので、それまで出さない

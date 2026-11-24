@@ -212,7 +212,7 @@ export default function SettingsScreen() {
             </Text>
           </View>
           <View style={styles.retentionRow}>
-            {([['index', '録音'], ['recordings', '録音一覧']] as const).map(
+            {([['index', '録音'], ['recordings', '録音一覧'], ['transcript', '最新の文字起こし']] as const).map(
               ([id, label]) => {
                 const on = startTab === id;
                 return (

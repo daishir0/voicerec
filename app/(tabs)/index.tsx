@@ -90,6 +90,8 @@ export default function RecordScreen() {
     recordingQuality, transcribeLocale, setActiveRecorder, addDebugLog,
     runRetention, coexistWithOtherApps, recordingAudioMode,
     autoTranscribe, retryTranscribe, transcribePending, transcribeEtaSec,
+    // ⚠️ 範囲選びの開閉は覚えておく。いつも範囲を選ぶ人に、毎回開かせる理由がない
+    showRange, setShowRange,
   } = useApp();
 
   const recorder = useAudioRecorder(
@@ -104,8 +106,6 @@ export default function RecordScreen() {
   const [levels, setLevels] = useState<Uint8Array>(new Uint8Array(0));
   const [range, setRange] = useState<Range>({ startSec: 0, endSec: 0 });
   const [busy, setBusy] = useState<string | null>(null);
-  // 範囲選び（波形とダイヤル）は畳んでおく。多くの場合は全体でよい
-  const [showRange, setShowRange] = useState(false);
   // 録音しながら、ここまでの文字を見たいとき
   const [showTranscriptWhileRecording, setShowTranscriptWhileRecording] = useState(false);
   const [notice, setNotice] = useState<string | null>(null);
@@ -251,7 +251,6 @@ export default function RecordScreen() {
       });
       // 録り終えた直後は全体が選ばれている方が自然（後から狭める方が速い）
       setRange({ startSec: 0, endSec: source.totalSec });
-      setShowRange(false);
     })();
     return () => { alive = false; };
   }, [source?.id, source?.totalSec]);
@@ -858,7 +857,7 @@ export default function RecordScreen() {
 
             {/* 選んでいる範囲。全体のままなら、わざわざ波形もダイヤルも出さない */}
             <Pressable
-              onPress={() => setShowRange(v => !v)}
+              onPress={() => setShowRange(!showRange)}
               style={[styles.rangeToggle, { borderColor: theme.border }]}
             >
               <Ionicons

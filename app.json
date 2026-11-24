@@ -10,7 +10,7 @@
     "ios": {
       "supportsTablet": false,
       "bundleIdentifier": "jp.path-finder.voicerec",
-      "buildNumber": "63",
+      "buildNumber": "64",
       "infoPlist": {
         "NSMicrophoneUsageDescription": "録音機能を使用するためにマイクへのアクセスが必要です",
         "UIBackgroundModes": [
