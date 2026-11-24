@@ -623,18 +623,16 @@ export default function RecordScreen() {
     if (sessions.length > 1) {
       options.push({ text: 'ほかの録音を選ぶ', onPress: () => setPicking(true) });
     }
-    options.push({ text: '文字起こしをやり直す', onPress: () => { void redoTranscribe(); } });
     options.push({ text: 'この録音を削除', style: 'destructive', onPress: doDelete });
     options.push({ text: 'やめる', style: 'cancel' });
     Alert.alert(
       `${describeDay(source.startedAt)} の録音`,
       // 見出しから外した細かい数字は、ここで見られるようにしておく
       `${formatDuration(source.totalSec)} ・ ${formatBytes(source.fileSize)}` +
-      (source.splits > 0 ? ` ・ ${source.splits + 1}つに区切られています` : '') +
-      (sessions.length > 1 ? `\nほかに${sessions.length - 1}件の録音があります` : ''),
+      (source.splits > 0 ? ` ・ ${source.splits + 1}つに区切られています` : ''),
       options,
     );
-  }, [source, sessions.length, redoTranscribe, doDelete]);
+  }, [source, sessions.length, doDelete]);
 
   const doUpload = useCallback(async () => {
     if (!source) return;
