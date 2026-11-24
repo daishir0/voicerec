@@ -91,7 +91,7 @@ export default function RecordScreen() {
     runRetention, coexistWithOtherApps, recordingAudioMode,
     autoTranscribe, retryTranscribe, transcribePending, transcribeEtaSec,
     // ⚠️ 範囲選びの開閉は覚えておく。いつも範囲を選ぶ人に、毎回開かせる理由がない
-    showRange, setShowRange,
+    showRange, setShowRange, usesServer, settings,
   } = useApp();
 
   const recorder = useAudioRecorder(
@@ -635,6 +635,13 @@ export default function RecordScreen() {
 
   const doUpload = useCallback(async () => {
     if (!source) return;
+    // ⚠️ URL だけ入れて利用者名と合言葉が空だと、送信は黙って飛ばされていた
+    //    （ログに「設定未完了のためスキップ」と出るだけで、画面には何も起きない）
+    if (!settings.username || !settings.password) {
+      Alert.alert('サーバーの設定が足りません',
+        '設定でユーザー名とパスワードを入れてください。\n接続先だけでは送れません。');
+      return;
+    }
     setBusy('切り出してアップロード中…');
     try {
       // 端末で起こした文字があれば一緒に送る。秒はすでに範囲の先頭からの値になっている
@@ -668,7 +675,7 @@ export default function RecordScreen() {
       setBusy(null);
     }
   }, [source, range, addRecording, uploadPending, addDebugLog, health,
-      transcribeLocale, transcript]);
+      transcribeLocale, transcript, settings.username, settings.password]);
 
   // ⚠️ プレイヤーの currentTime は**いま鳴らしているファイルの中の位置**。
   //    セッションは複数ファイルに分かれうるので、全体の時間に直さないと巻き戻って見える。
@@ -928,8 +935,11 @@ export default function RecordScreen() {
             </Pressable>
           )}
 
-          {/* ⚠️ **文字起こしが済むまで送らせない。** 音声だけ送ると、サーバーが
+          {/* ⚠️ 接続先を入れていない人には、**存在ごと見せない**。
+              灰色で置くと「何か損をしている」と感じさせる。このアプリは単体で完結する。
+              ⚠️ **文字起こしが済むまで送らせない。** 音声だけ送ると、サーバーが
               OpenAI を使って同じことをやり直す。端末で作った文字を必ず添える */}
+          {usesServer && (
           <Pressable
             onPress={doUpload}
             disabled={!!busy || !ready || alreadySent}
@@ -966,6 +976,7 @@ export default function RecordScreen() {
               </Text>
             </View>
           </Pressable>
+          )}
 
           {playing && (
             <View style={[styles.playingRow, { backgroundColor: theme.accent }]}>

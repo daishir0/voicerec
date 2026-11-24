@@ -31,7 +31,7 @@ function formatDate(isoString: string): string {
 
 export function RecordingListItem({ recording, onEditName }: RecordingListItemProps) {
   const router = useRouter();
-  const { theme, deleteRecording, retryUpload } = useApp();
+  const { theme, deleteRecording, retryUpload, usesServer } = useApp();
   const isUploaded = recording.uploadStatus === 'uploaded';
   const isMaterial = recording.kind === 'long';
   const isFailed = recording.uploadStatus === 'failed';
@@ -122,13 +122,14 @@ export function RecordingListItem({ recording, onEditName }: RecordingListItemPr
         </Text>
       </View>
       <View style={styles.statusRow}>
-        <UploadStatusBadge status={recording.uploadStatus} />
+        {/* 接続先を入れていない人に、送信の状態を見せる意味がない */}
+        {usesServer && <UploadStatusBadge status={recording.uploadStatus} />}
         {isUploading && (
           <Text style={[styles.progressText, { color: theme.textSecondary }]}>
             {Math.round(progress * 100)}%
           </Text>
         )}
-        {isFailed && (
+        {usesServer && isFailed && (
           <Pressable onPress={handleRetry} style={styles.retryButton} hitSlop={8}>
             <Ionicons name="refresh" size={14} color="#fff" />
             <Text style={styles.retryText}>再送信</Text>

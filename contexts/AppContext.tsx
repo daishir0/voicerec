@@ -51,6 +51,14 @@ interface Theme {
 
 interface AppContextType {
   settings: ServerSettings;
+  /**
+   * サーバー連携を使っているか。接続先が入っているかどうかだけで決める。
+   *
+   * ⚠️ **このアプリは単体で完結する。** サーバーは足せる機能であって前提ではない。
+   * 接続先が空のうちは、送信ボタンも「送ったもの」の節も出さない。
+   * 灰色にして見せると「何か損をしている」と感じさせるので、存在ごと消す。
+   */
+  usesServer: boolean;
   recordings: RecordingEntry[];
   isDarkMode: boolean;
   isDebugMode: boolean;
@@ -220,6 +228,15 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
 
       const savedAuto = await AsyncStorage.getItem(AUTO_TRANSCRIBE_KEY);
       if (savedAuto === 'false') setAutoTranscribeState(false);
+      // ⚠️ **サーバーを使わない人にとって、端末の録音が唯一の原本。**
+      //    2日で消すのはサーバーに控えがあるから成り立つ既定で、
+      //    単体で使っていると、録ったものが黙って消える。
+      //    一度も選んでいない人だけ、接続先の有無で既定を変える。
+      if (savedRetention == null) {
+        const standalone = !(savedSettings?.serverUrl);
+        if (standalone) setRetentionDaysState(0);
+        retentionRef.current.days = standalone ? 0 : DEFAULT_RETENTION_DAYS;
+      }
       const days = Number(savedRetention);
       if ((RETENTION_CHOICES as readonly number[]).includes(days)) {
         setRetentionDaysState(days as RetentionDays);
@@ -766,6 +783,7 @@ export function AppProvider({ children }: { children: React.ReactNode }) {
     <AppContext.Provider
       value={{
         settings,
+        usesServer: !!settings.serverUrl,
         recordings,
         isDarkMode,
         isDebugMode,

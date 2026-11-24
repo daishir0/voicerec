@@ -8,7 +8,7 @@
 //    ⚠️ 録音画面の再生と二重に鳴らさないため、**この画面を離れるとき必ず止める**。
 
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-native';
+import { Alert, Pressable, ScrollView, Share, StyleSheet, Text, View } from 'react-native';
 import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
@@ -96,6 +96,21 @@ export default function TranscriptScreen() {
     if (playingAt != null && status.didJustFinish) stop();
   }, [playingAt, status.didJustFinish, stop]);
 
+  /**
+   * ほかのアプリへ渡す。
+   * ⚠️ サーバーを使わない人には、ここが**文字を外へ出す唯一の出口**になる。
+   *    コピーだけだと、メールやメモへ渡すのに一手間かかる。
+   */
+  const share = useCallback(async () => {
+    if (!transcript?.text || !session) return;
+    const head = `${session.startedAt.toLocaleString('ja-JP')} の録音\n\n`;
+    try {
+      await Share.share({ message: head + transcript.text });
+    } catch (e: any) {
+      Alert.alert('共有できませんでした', e?.message ?? String(e));
+    }
+  }, [transcript, session]);
+
   const copy = useCallback(async () => {
     if (!transcript?.text) return;
     await Clipboard.setStringAsync(transcript.text);
@@ -136,10 +151,11 @@ export default function TranscriptScreen() {
           {' '}
           {formatClock(session.startedAt, 0, false)} の録音
         </Text>
-        <Pressable onPress={copy} hitSlop={10} disabled={!transcript?.text}>
-          <Text style={{ color: transcript?.text ? theme.accent : theme.textSecondary, fontSize: 15 }}>
-            コピー
-          </Text>
+        <Pressable onPress={share} hitSlop={10} disabled={!transcript?.text}>
+          <Ionicons
+            name="share-outline" size={22}
+            color={transcript?.text ? theme.accent : theme.textSecondary}
+          />
         </Pressable>
       </View>
 
@@ -156,6 +172,13 @@ export default function TranscriptScreen() {
             </Text>
           </Pressable>
         )}
+        <Pressable onPress={copy} hitSlop={8} disabled={!transcript?.text}>
+          <Text style={{
+            color: transcript?.text ? theme.accent : theme.textSecondary, fontSize: 13,
+          }}>
+            コピー
+          </Text>
+        </Pressable>
       </View>
 
       {waiting && (

@@ -9,7 +9,7 @@ import React, { useMemo } from 'react';
 import { loginAndGetToken } from '@/services/upload-service';
 
 export default function RecordingsScreen() {
-  const { theme, recordings, updateRecording, settings, retentionDays } = useApp();
+  const { theme, recordings, updateRecording, settings, retentionDays, usesServer } = useApp();
   const [openingServer, setOpeningServer] = useState(false);
 
   // ⚠️ 一覧には性質の違うものが並ぶ。**素材**（切り出し元の長い録音）と
@@ -19,6 +19,13 @@ export default function RecordingsScreen() {
     const material = recordings.filter(r => r.kind === 'long');
     const sent = recordings.filter(r => r.kind !== 'long');
     const out: { title: string; hint: string; data: typeof recordings }[] = [];
+    // ⚠️ 接続先を入れていない人に「サーバーへ送ったもの」を見せない。
+    //    送るという概念そのものが無いので、節を分ける意味がない
+    if (!usesServer) {
+      const all = [...material, ...sent];
+      if (all.length) out.push({ title: '録音', hint: '押すと範囲を選べます', data: all });
+      return out;
+    }
     if (material.length) {
       out.push({
         title: '録音（ここから切り出す）',
@@ -34,7 +41,7 @@ export default function RecordingsScreen() {
       });
     }
     return out;
-  }, [recordings]);
+  }, [recordings, usesServer]);
 
   const handleEditName = (id: string, currentName: string) => {
     Alert.prompt(

@@ -31,6 +31,7 @@ export default function SettingsScreen() {
   const {
     theme,
     settings,
+    usesServer,
     updateSettings,
     isDebugMode,
     debugLogs,
@@ -331,6 +332,8 @@ export default function SettingsScreen() {
               );
             })}
           </View>
+          {/* 接続先を入れていない人には、守る対象（送信待ち）がそもそも無い */}
+          {usesServer && (
           <View style={styles.debugToggleRow}>
             <View style={{ flex: 1, paddingRight: 12 }}>
               <Text style={[styles.label, { color: theme.textSecondary, marginTop: 0 }]}>
@@ -346,6 +349,7 @@ export default function SettingsScreen() {
               trackColor={{ false: theme.bgTertiary, true: theme.accent }}
             />
           </View>
+          )}
         </View>
 
         {/* バージョン。どのビルドで起きた話かを、毎回聞かずに済むようにする */}
