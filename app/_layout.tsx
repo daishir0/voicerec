@@ -35,7 +35,11 @@ function Shell() {
         <Stack.Screen name="diagnostics" options={{ presentation: 'modal', headerShown: false }} />
         <Stack.Screen name="transcript" options={{ headerShown: false }} />
       </Stack>
-      <StatusBar style={isDarkMode ? 'light' : 'dark'} />
+      {/* ⚠️ ステータスバーの文字色は、**その画面の背景**に合わせる。
+          ヘッダーのある画面は白地なので濃い色で固定する。アプリのダークモードに
+          合わせると、白地に白文字になって時刻も電波も消える（2026-11-24）。
+          背景が暗い画面（文字起こし）は、その画面の中で上書きする。 */}
+      <StatusBar style="dark" />
     </ThemeProvider>
   );
 }

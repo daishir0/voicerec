@@ -12,6 +12,7 @@ import { Alert, Pressable, ScrollView, StyleSheet, Text, View } from 'react-nati
 import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-audio';
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
+import { StatusBar } from 'expo-status-bar';
 import { useLocalSearchParams, useRouter } from 'expo-router';
 import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp } from '@/contexts/AppContext';
@@ -22,7 +23,7 @@ import { buildSessions, piecesForRange, transcriptForRange } from '@/services/se
 const LINE_GAP_SEC = 20;
 
 export default function TranscriptScreen() {
-  const { theme, recordings, transcribePending } = useApp();
+  const { theme, recordings, transcribePending, isDarkMode } = useApp();
   const params = useLocalSearchParams<{ session?: string }>();
   const router = useRouter();
   // ⚠️ この画面はナビゲーションのヘッダーを出していないので、上端の余白は自分で取る
@@ -120,6 +121,9 @@ export default function TranscriptScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg }}>
+      {/* ⚠️ この画面はヘッダーを出さず、背景がそのまま上端まで来る。
+          ルートの設定（濃い色）のままだと、暗い背景に黒文字で時刻が消える */}
+      <StatusBar style={isDarkMode ? 'light' : 'dark'} />
       <View style={[styles.bar, {
         borderBottomColor: theme.border, paddingTop: insets.top + 10,
       }]}>
