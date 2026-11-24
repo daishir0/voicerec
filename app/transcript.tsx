@@ -13,6 +13,7 @@ import { setAudioModeAsync, useAudioPlayer, useAudioPlayerStatus } from 'expo-au
 import * as Clipboard from 'expo-clipboard';
 import { Ionicons } from '@expo/vector-icons';
 import { useLocalSearchParams, useRouter } from 'expo-router';
+import { useSafeAreaInsets } from 'react-native-safe-area-context';
 import { useApp } from '@/contexts/AppContext';
 import { formatClock, formatDuration } from '@/components/TimeRangePicker';
 import { buildSessions, piecesForRange, transcriptForRange } from '@/services/session';
@@ -24,6 +25,8 @@ export default function TranscriptScreen() {
   const { theme, recordings, transcribePending } = useApp();
   const params = useLocalSearchParams<{ session?: string }>();
   const router = useRouter();
+  // ⚠️ この画面はナビゲーションのヘッダーを出していないので、上端の余白は自分で取る
+  const insets = useSafeAreaInsets();
 
   const [mode, setMode] = useState<'time' | 'plain'>('time');
   const [playingAt, setPlayingAt] = useState<number | null>(null);
@@ -117,7 +120,9 @@ export default function TranscriptScreen() {
 
   return (
     <View style={{ flex: 1, backgroundColor: theme.bg }}>
-      <View style={[styles.bar, { borderBottomColor: theme.border }]}>
+      <View style={[styles.bar, {
+        borderBottomColor: theme.border, paddingTop: insets.top + 10,
+      }]}>
         <Pressable onPress={() => { stop(); router.back(); }} hitSlop={10} style={styles.back}>
           <Ionicons name="chevron-back" size={22} color={theme.accent} />
           <Text style={{ color: theme.accent, fontSize: 16 }}>戻る</Text>
